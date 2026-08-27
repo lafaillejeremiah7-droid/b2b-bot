@@ -35,10 +35,10 @@ The requirements are not of uniform criticality, and the design reflects that or
 | 4 — Pipeline state machine | §3.5 Pipeline_State_Machine, §4.4 history table |
 | 5 — Outreach and compliance | §3.6 Compliance_Guard and Outreach_Controller |
 | 6 — Site preview review gate | §3.8 Site_Review_Gate |
-| 7 — Price suggestion and override | §3.9 Pricing_Advisor, §2.1 resolved gap |
+| 7 — Price suggestion and override | §3.9 Pricing_Advisor, §2.1 pricing inputs |
 | 8 — Invoicing, verification, release | §3.7 Release safety architecture |
 | 9 — Operator notifications | §3.10 Notification_Service |
-| 10 — Metrics, funnel, A/B | §3.11 Analytics_View, §2.4 cohort funnel decision |
+| 10 — Metrics, funnel, A/B | §3.11 Analytics_View, §2.4 cohort funnel |
 | 11 — Audit logging | §3.12 Audit_Logger, §3.13 transactional integrity |
 | 12 — Pipeline adapter boundary | §3.14 Pipeline_Adapter |
 | 13 — Data persistence model | §4 Data Models |
@@ -47,29 +47,31 @@ The requirements are not of uniform criticality, and the design reflects that or
 
 ## Key Design Decisions
 
-This section records the decisions that shaped the rest of the document, including the schema gap flagged during requirements review and three latent inconsistencies discovered while designing against the acceptance criteria.
+This section records the decisions that shaped the rest of the document. Four of them — §2.1, §2.4, §2.5, and §2.6 — began as a schema gap and three latent inconsistencies found while designing against the acceptance criteria. The requirements now state each of those rules directly, so those subsections record how the design implements the stated rule and why the rule is shaped the way it is; the reasoning is kept because it is the justification for the rule, not a proposal to override it. The remaining three subsections are technology and structure choices this design makes on its own.
 
-### 2.1 RESOLVED — Where `page_count`, `website_condition`, and `urgency` live
+### 2.1 SPECIFIED — Where `page_count`, `website_condition`, and `urgency` live
 
-**The gap.** The Suggested_Price formula (Requirement 7.1) reads `page_count`, `website_condition`, and `urgency`. The `leads` table enumerated in Requirement 13.1 contains none of them, and `page_count` is defined on Site_Project (Requirement 6.1). The formula is therefore uncomputable as specified for a Lead that has no generated site yet — which is every Lead at the moment pricing matters most.
+**What the requirements state.** Requirement 13.1 declares `website_condition`, `urgency`, and `estimated_page_count` as columns of the `leads` table, and Requirement 13.6 constrains `website_condition` and `urgency` to the integer range 1 through 5 or unset and `estimated_page_count` to the integer range 0 through 200 or unset. Requirement 7.12 states the resolution order for the `page_count` input and states that `website_condition` and `urgency` are read from the Lead's own values with an unset value treated as absent. Requirements 3.11 and 3.12 state that an Operator holding the Agent or Admin role edits all three through the same validated, audited field-edit path used for the contact fields, with an out-of-range value rejected, the previous value retained, and the accepted range displayed. Requirement 7.13 states that `preferred_price` is excluded from every Suggested_Price computation and is never copied into a Deal `agreed_price`.
 
-**Decision.**
+**Why the rule is shaped this way.** The Suggested_Price formula (Requirement 7.1) reads `page_count`, `website_condition`, and `urgency`, and `page_count` is a Site_Project attribute (Requirement 6.1) that does not exist until a site has been generated. Pricing matters most *before* generation, so unless each input has a Lead-side source the formula is uncomputable for exactly the Leads an Operator is about to quote. That is why the three inputs are Lead columns, and why `page_count` resolves through an ordered chain rather than reading one place.
+
+**Implementation.**
 
 | Attribute | Home | Populated by | Nullable |
 |---|---|---|---|
 | `page_count` | `site_projects.page_count` (authoritative, set at generation) with `leads.estimated_page_count` as the pre-generation source | Adapter on generation; Operator on the Deal_Room_View before generation | Yes (both) |
-| `website_condition` | **New column** `leads.website_condition` `SMALLINT CHECK (BETWEEN 1 AND 5)` | Operator on the Deal_Room_View; future bot research step | Yes |
-| `urgency` | **New column** `leads.urgency` `SMALLINT CHECK (BETWEEN 1 AND 5)` | Operator on the Deal_Room_View; future bot research step | Yes |
+| `website_condition` | `leads.website_condition` `SMALLINT CHECK (BETWEEN 1 AND 5)` (Requirements 13.1, 13.6) | Operator on the Deal_Room_View; future bot research step | Yes |
+| `urgency` | `leads.urgency` `SMALLINT CHECK (BETWEEN 1 AND 5)` (Requirements 13.1, 13.6) | Operator on the Deal_Room_View; future bot research step | Yes |
 
-`Pricing_Advisor.resolve_inputs(lead)` resolves `page_count` in a fixed order: the `page_count` of the Lead's most recent Site_Project if one exists, otherwise `leads.estimated_page_count`, otherwise absent. `website_condition` and `urgency` read their columns directly.
+`Pricing_Advisor.resolve_inputs(lead)` implements the Requirement 7.12 order for `page_count`: the `page_count` of the Lead's most recent Site_Project if one exists, otherwise `leads.estimated_page_count`, otherwise absent. `website_condition` and `urgency` read their columns directly, an unset column resolving to absent.
 
-**Population while the bot does not exist.** All three are Operator-entered fields on the Deal_Room_View, grouped in a "Pricing inputs" panel that displays the resulting Suggested_Price and recomputes it on change. Each is edited through the same validated field-edit path as the contact fields (Requirement 3.6/3.8), so each edit is audited as a Lead field edit. When the bot arrives it writes the same three columns; no dashboard code changes.
+**Population while the bot does not exist.** All three are Operator-entered fields on the Deal_Room_View, grouped in a "Pricing inputs" panel that displays the resulting Suggested_Price and recomputes it from the persisted values on change (Requirement 3.11). Each is edited through the same validated field-edit path as the contact fields (Requirements 3.6/3.8), with the ranges of Requirement 3.12 enforced at the view boundary and again by the column `CHECK`s, so each edit is audited as a Lead field edit. When the bot arrives it writes the same three columns; no dashboard code changes.
 
 **Consistency with Requirement 7.10.** The fallback is all-or-nothing, not per-attribute: if *any* of the three resolves to absent, `Pricing_Advisor` returns `SuggestedPrice(amount=850, is_fallback=True, missing=[names...])` — the Price_Anchor — and the Deal_Room_View names each absent attribute. It does not substitute defaults for individual attributes and then evaluate the formula, because that would present a computed-looking number derived from invented inputs.
 
-**Effect on the shared schema contract.** These are *additive* columns. Requirement 13.1 states the `leads` table SHALL contain an enumerated set; adding columns does not remove any. The bot spec must treat `website_condition`, `urgency`, and `estimated_page_count` as part of the shared contract, with the dashboard as the current writer and the bot's research step as the eventual co-writer. See §4.2 for the full ownership table.
+**Effect on the shared schema contract.** Requirement 13.1 enumerates all three columns as part of the `leads` table, so they are part of the shared contract rather than a dashboard-local addition. The bot spec must treat `website_condition`, `urgency`, and `estimated_page_count` accordingly, with the dashboard as the current writer and the bot's research step as the eventual co-writer. See §4.2 for the full ownership table.
 
-**Related clarification —`leads.preferred_price` is not a pricing input.** Requirement 13.1 carries `preferred_price`, which the Requirement 7.1 formula does not reference. It is treated as a bot-owned research hint: displayed read-only on the Deal_Room_View for context, never fed to the formula, and never copied into `agreed_price` (Requirement 7.8 forbids any automatic assignment of `agreed_price`).
+**Related rule — `leads.preferred_price` is not a pricing input.** Requirement 13.1 carries `preferred_price`, which the Requirement 7.1 formula does not reference, and Requirement 7.13 states that the Pricing_Advisor excludes it from every Suggested_Price computation, that the Deal_Room_View displays it read-only as a research hint, and that no component copies it into a Deal `agreed_price`. The design implements it as a bot-owned research hint: displayed read-only on the Deal_Room_View for context, never fed to the formula, and never copied into `agreed_price` — which Requirement 7.8 independently forbids by ruling out any automatic assignment of `agreed_price`.
 
 ### 2.2 Backend framework: Django + PostgreSQL
 
@@ -96,25 +98,29 @@ Rationale:
 
 **Where JavaScript is still required:** the confirmation dialogs (Requirements 5.2, 5.7, 8.6), the live Suggested_Price recompute, and the notification list poll. All are small Alpine.js components over server-rendered markup. Confirmation is *never* only client-side — see §3.6.3.
 
-### 2.4 RESOLVED — Funnel drop-off is cohort-based
+### 2.4 SPECIFIED — Funnel drop-off is cohort-based
 
-**The inconsistency.** Requirement 10.2 computes drop-off as `Reached_Count(earlier) − Reached_Count(later)`, and Requirement 10.11 requires every rate metric to fall in `[0, 1]`. Under the literal Requirement definition of Reached_Count (any lead whose state history contains that value with an occurrence timestamp inside the range), these conflict: a Lead that reached New_Lead *before* the range and Contacted *inside* it counts toward Contacted but not New_Lead. With enough such leads, `Reached_Count(Contacted) > Reached_Count(New_Lead)`, making the drop-off count negative and the percentage out of range.
+**What the requirements state.** Requirement 10.2 is explicitly the **Cohort funnel** block: it is computed over the Cohort of the selected date range, reports the Cohort_Stage_Count of each ordered stage, derives drop-off counts and percentages from those counts, and computes no figure from the Reached_Count of Requirement 10.1. Requirement 10.1 is explicitly the **Activity in range** block, carrying Reached_Count and Current_State_Count per state without restriction to a Cohort, and required to be labelled distinctly from the Cohort funnel block. Requirement 10.8 carves the cohort-derived metrics out of the ordinary range filter: cohort members are selected by the Cohort membership rule alone and their reached stages are counted without further restriction to the date range. Requirement 10.15 states the monotonicity invariant — each Cohort_Stage_Count is less than or equal to the one before it, drop-off counts are non-negative, drop-off percentages fall in `[0, 1]`, and the bounds hold without clamping. The Glossary defines both **Cohort** (the Leads whose New_Lead history entry falls inside the range) and **Cohort_Stage_Count** (Cohort members whose history contains that stage, counted regardless of when it was reached).
 
-**Decision: the funnel in Requirement 10.2 is computed over a cohort.** The denominator population is the set of Leads whose `New_Lead` history entry falls inside the selected range; stage counts count only members of that cohort. Because every Lead's history begins at New_Lead (Requirement 4.5) and transitions are forward-only along the ordered stages, cohort stage counts are monotonically non-increasing by construction, so drop-off counts are non-negative and percentages land in `[0, 1]` without clamping.
+**Why the rule is shaped this way.** A funnel computed from the literal Reached_Count definition cannot satisfy Requirement 10.11's `[0, 1]` rate bound. Reached_Count admits any Lead whose history contains a value with an occurrence timestamp inside the range, so a Lead that reached New_Lead *before* the range and Contacted *inside* it counts toward Contacted but not New_Lead. With enough such Leads, `Reached_Count(Contacted) > Reached_Count(New_Lead)`, the drop-off count goes negative, and the percentage leaves the required range. Fixing that by clamping would hide the arithmetic rather than correct it. Restricting the funnel to a Cohort removes the cause: because every Lead's history begins at New_Lead (Requirement 4.5) and the ordered stages are traversed forward only, Cohort stage counts are monotonically non-increasing *by construction*, which is exactly the reasoning Requirement 10.15 records for holding its bounds without clamping.
 
-The stage counts in Requirement 10.1 keep the literal Reached_Count definition (activity in range, regardless of cohort), because that is the operationally useful "what happened this month" number. The Analytics_View therefore labels the two blocks distinctly: **Activity in range** (10.1) and **Cohort funnel** (10.2). See §3.11.
+**Implementation.** The Cohort funnel's population is the set of Leads whose `New_Lead` history entry falls inside the selected range, and stage counts count only members of that Cohort. The Activity-in-range block keeps the literal Reached_Count and Current_State_Count definitions, because that is the operationally useful "what happened this month" number, and the Analytics_View labels the two blocks distinctly — **Activity in range** (10.1) and **Cohort funnel** (10.2) — so the two sets of stage figures are never read as the same measure. See §3.11.
 
-### 2.5 RESOLVED — Notification subscription vs channel enablement
+### 2.5 SPECIFIED — Notification subscription vs channel enablement
 
-**The inconsistency.** Requirement 9.1–9.4 generate a notification "for each Operator who has [event-type] delivery enabled". Requirement 9.7 defines preferences as a per-channel toggle per event type. Requirement 9.11 requires notifications to appear in the in-dashboard list "even when the Operator has disabled both the Slack and email channels" — which is unreachable if channel state gates generation.
+**What the requirements state.** Requirements 9.1 through 9.4 condition notification *generation* on the recipient's Notification_Subscription for the event type, explicitly "irrespective of that Operator's Channel_Delivery_Setting values". Requirements 9.5 and 9.6 are the channel *attempt* rules: each is conditioned on that channel's own Channel_Delivery_Setting, and a disabled setting suppresses the attempt while the generated notification record is retained. Requirement 9.7 declares both preference levels — one Notification_Subscription per Operator per event type, and one Channel_Delivery_Setting per Operator per event type per channel over Slack and email — states that each is set independently, states that generation depends on the subscription alone and each channel attempt on that channel's setting alone, and defines the no-preference default as subscribed to all four event types with both channels enabled. Requirement 9.10 states the counting rule: at most one notification per event identifier per Operator, and at most one delivery outcome per generated notification per enabled channel. Requirement 9.11 is consequently reachable — every generated notification appears in the in-dashboard list even when both Channel_Delivery_Setting values are disabled, because the in-dashboard list is not a channel. The Glossary defines **Notification_Subscription** and **Channel_Delivery_Setting** as those two distinct settings.
 
-**Decision: two levels of preference.** A per-`(operator, event_type)` **subscription** flag controls whether a notification record is generated; a per-`(operator, event_type, channel)` **delivery** flag controls whether each channel is attempted. An Operator subscribed to an event type with both channels off still receives the in-dashboard entry, satisfying Requirement 9.11. Absent any recorded preference, an Operator is subscribed to all four event types with both channels enabled, satisfying Requirement 9.7's default. The in-dashboard list is not a "channel" and cannot be disabled.
+**Why the rule is shaped this way.** With one level of preference, Requirement 9.11 would be unreachable: if channel state gated generation, an Operator with both channels off would have no notification record to show in the in-dashboard list, and the criterion could never be satisfied. Two levels separate the two questions the criteria ask independently — *should this Operator be told about this event at all* (subscription) and *should this particular transport be attempted* (channel) — so a channel outage or an Operator muting Slack never destroys the record of the event.
 
-### 2.6 Validation ordering in the state machine
+**Implementation.** A per-`(operator, event_type)` **subscription** flag controls whether a `notifications` record is generated; a per-`(operator, event_type, channel)` **delivery** flag controls whether each channel is attempted. An Operator subscribed to an event type with both channels off still receives the in-dashboard entry (Requirement 9.11). Absent any recorded preference the Operator is treated as subscribed to all four event types with both channels enabled (Requirement 9.7). One notification row per `(event_id, operator_id)` and one delivery row per `(notification_id, channel)` implement Requirement 9.10 as uniqueness constraints rather than as pre-insert checks. See §3.10 and §4.5.
 
-**The tension.** Requirement 4.4 requires the Terminal_State rejection to be evaluated "before every other validation check". Requirement 4.10 requires an unknown target-state value or a nonexistent `lead_id` to be rejected "before evaluating the Legal_Transition set". A nonexistent Lead has no state, so the terminal check cannot precede Lead resolution.
+### 2.6 SPECIFIED — Validation ordering in the state machine
 
-**Decision: resolution precedes validation.** Parsing the target state value and resolving the `lead_id` are *resolution* steps, not validation checks — they establish the subject of the validation. The ordered pipeline is therefore: (0) resolve, (1) terminal pre-check, (2) legal-transition membership, (3) action preconditions, (4) concurrency guard. This satisfies Requirement 4.4 ("first validation check applied to a resolved Lead") and Requirement 4.10 ("before evaluating the Legal_Transition set") simultaneously. See §3.5.2.
+**What the requirements state.** Requirement 4.12 states the five-step pipeline directly and requires evaluation to stop at the first step that rejects: step 0, resolution (parse the target Pipeline_State value, resolve the `lead_id`, per Requirement 4.10); step 1, the Terminal_State pre-check of Requirement 4.4; step 2, the Legal_Transition membership check of Requirement 4.3; step 3, the action precondition checks drawn from Requirements 5 through 8 under Requirement 4.11; step 4, the concurrency guard of Requirement 4.7. Requirement 4.4 scopes its precedence claim to "before every other validation check applied to the resolved Lead", and Requirement 4.10 states that parsing the target value and resolving the `lead_id` are resolution steps that establish the subject of validation rather than validation checks.
+
+**Why the rule is shaped this way.** Without the resolution/validation distinction the two criteria would contradict each other. Requirement 4.4 wants the Terminal_State rejection first; Requirement 4.10 wants an unknown target value or a nonexistent `lead_id` rejected before the Legal_Transition set is consulted. A nonexistent Lead has no Pipeline_State to compare against the Terminal_State set, so the terminal check *cannot* precede Lead resolution — there is nothing to check. Classifying parse-and-resolve as step 0 rather than as a validation check makes both criteria satisfiable simultaneously and keeps the terminal rejection first among the checks that actually inspect the Lead.
+
+**Implementation.** The ordered pipeline is (0) resolve, (1) terminal pre-check, (2) legal-transition membership, (3) action preconditions, (4) concurrency guard, stopping at the first rejection. See §3.5.2 for the step-by-step table and the messages each step produces.
 
 ### 2.7 Adapter operations are synchronous; only notifications are backgrounded
 
@@ -374,7 +380,9 @@ ORDER BY <selected_column> <dir> NULLS LAST,   -- Req 2.4 nulls after values
 
 `NULLS LAST` is applied for both directions, since Requirement 2.4 places valueless records after valued ones irrespective of direction — which is *not* PostgreSQL's default for `DESC`, so the clause is explicit.
 
-**Most-recent-activity timestamp (Requirement 2.1)** is the greatest of the Lead's email `sent_at`/`opened_at`/`clicked_at`/`reply_at`, call timestamps, `pipeline_state_history.occurred_at`, and Operator action `occurred_at`. Computing this per row with correlated subqueries would be six subqueries per row. Instead it is a maintained denormalized column `leads.last_activity_at`, updated in the same transaction as any write that could advance it (a small set of well-known code paths: email row insert, adapter event applying an email timestamp, call insert, state transition, audited Lead edit). This makes it sortable and indexable, which the 1-second filter/sort budget (Requirement 2.7) requires. A nightly consistency job recomputes it from source tables and logs any drift.
+**Most-recent-activity timestamp (Requirement 2.1)** is the greatest of the Lead's email `sent_at`/`opened_at`/`clicked_at`/`reply_at`, call timestamps, `pipeline_state_history.occurred_at`, and Operator action `occurred_at`. Computing this per row with correlated subqueries would be six subqueries per row. Instead it is a maintained denormalized column `leads.last_activity_at`, which Requirement 13.1 declares and requires to be written in the same transaction as any record write that advances it and read by the sort of Requirement 2.4. The advancing writes are a small set of well-known code paths: email row insert, adapter event applying an email timestamp, call insert, state transition, audited Lead edit. Denormalizing makes the value sortable and indexable, which the 1-second filter/sort budget (Requirement 2.7) requires.
+
+Requirement 13.14 goes further and states the equality as an invariant of the stored data — for all Leads, `last_activity_at` equals the latest of the Requirement 2.1 source timestamps and is unset when the Lead has none — rather than as a property of one write path. That is the stronger claim, and it is what the nightly consistency job verifies: the job recomputes the value from the source tables for every Lead, logs any drift, and is the detection mechanism for a future writer that advances a source timestamp without advancing the column. Property 43 asserts the same invariant over arbitrary interleavings of the advancing writes.
 
 **Search (Requirement 2.3)** trims the term, requires length 1–100 after trimming, and matches case-insensitively as a substring against `company_name`, `contact_name`, `contact_email`, `contact_phone`. Substring (not prefix) matching means B-tree indexes do not apply; a PostgreSQL `pg_trgm` GIN index over the four columns keeps this within budget at 5,000 rows and well beyond.
 
@@ -409,7 +417,7 @@ ORDER BY occurred_at DESC, kind ASC LIMIT 50 OFFSET %s
 
 **Release status display.** `Locked` while no Release_Authorization exists for the Deal (Requirement 3.2); `Released` with the `delivered_date` once one exists (Requirement 3.10). The status is derived from the existence of the authorization row, never from a separately stored status string, so it cannot disagree with the authorization table.
 
-**Call record entry (Requirement 3.5).** `attempt_number` is assigned server-side as `1` for the first call row or `max(attempt_number) + 1` otherwise, computed under a row lock on the Lead so two concurrent submissions cannot both take the same number. `outcome ∈ {answered, busy, no-answer}`; notes ≤ 2,000 characters at the view boundary. Note the deliberate difference from Requirement 13.4, which sizes the `notes` *column* at 5,000 characters and bounds `attempt_number` at 20: the column is the storage ceiling and the view rule is the input rule, so a future bot writing longer notes is not blocked by a dashboard-side input limit.
+**Call record entry (Requirement 3.5).** `attempt_number` is assigned server-side as `1` for the first call row or `max(attempt_number) + 1` otherwise, computed under a row lock on the Lead so two concurrent submissions cannot both take the same number. `outcome ∈ {answered, busy, no-answer}`; notes ≤ 2,000 characters at the view boundary. Requirements 3.5 and 13.4 state the difference from the `calls` column bounds and the reason for it: the 5,000-character `notes` ceiling and the `attempt_number` range of 1 through 20 are the storage ceilings shared with every writer of the table, deliberately wider than the Deal_Room_View input rules, and the `attempt_number` is assigned by the view rather than submitted by the Operator. So a future bot writing longer notes is not blocked by a dashboard-side input limit.
 
 **Field edits (Requirements 3.6, 3.8).** `contact_name` ≤ 100 chars, `contact_email` a syntactically valid address ≤ 254 chars, `contact_phone` 7–20 chars. Rejection retains the stored value and names the field and its accepted range. Acceptance writes the new value and an audit entry carrying before and after. The same path serves the three pricing-input fields from §2.1.
 
@@ -521,16 +529,16 @@ class PipelineStateMachine:
                 source_event_id: str | None = None) -> TransitionOutcome:
 ```
 
-Evaluation order, per §2.6:
+Evaluation order is the five-step pipeline stated by Requirement 4.12, whose steps this table implements one-for-one, stopping at the first step that rejects (see §2.6 for why the pipeline is shaped this way):
 
 | Step | Check | Requirement | On failure |
 |---|---|---|---|
-| 0a | `to_state` is a member of the PipelineState value set | 4.10 | Reject, message names the target value as invalid, no state change |
-| 0b | `lead_id` resolves to an existing Lead (`SELECT … FOR UPDATE`) | 4.10 | Reject, message names the `lead_id` as invalid |
-| 1 | `lead.status ∉ TERMINAL_STATES` | 4.4 | Reject: final state, no further change available |
-| 2 | `(lead.status, to_state) ∈ LEGAL_TRANSITIONS` | 4.3 | Reject, message lists the legal successors of `lead.status` |
-| 3 | every `TRANSITION_PRECONDITIONS[to_state]` is satisfied | 4.11 | Reject, message lists each unsatisfied precondition |
-| 4 | conditional `UPDATE` matches expected state and version | 4.7 | Reject: state changed since the request was formed |
+| 0a | `to_state` is a member of the PipelineState value set | 4.10, 4.12 step 0 | Reject, message names the target value as invalid, no state change |
+| 0b | `lead_id` resolves to an existing Lead (`SELECT … FOR UPDATE`) | 4.10, 4.12 step 0 | Reject, message names the `lead_id` as invalid |
+| 1 | `lead.status ∉ TERMINAL_STATES` | 4.4, 4.12 step 1 | Reject: final state, no further change available |
+| 2 | `(lead.status, to_state) ∈ LEGAL_TRANSITIONS` | 4.3, 4.12 step 2 | Reject, message lists the legal successors of `lead.status` |
+| 3 | every `TRANSITION_PRECONDITIONS[to_state]` is satisfied | 4.11, 4.12 step 3 | Reject, message lists each unsatisfied precondition |
+| 4 | conditional `UPDATE` matches expected state and version | 4.7, 4.13, 4.12 step 4 | Reject: state changed since the request was formed |
 
 Step 1 precedes steps 2 and 3 exactly as Requirement 4.4 demands, and it makes the requirement's other clause automatic: since no legal transition originates from a terminal state (asserted at import), step 1 is strictly a *better message* for a case step 2 would also reject — a belt-and-braces arrangement that is worth keeping because the message quality difference is real.
 
@@ -540,7 +548,7 @@ Two mechanisms, both required, for different reasons.
 
 **Row lock for serialization.** The read of `lead.status` happens under `SELECT … FOR UPDATE`, so a second concurrent request blocks until the first commits and then re-reads the *new* state. This alone prevents lost updates, and [`select_for_update` requires an enclosing transaction to hold the lock at all](https://stackoverflow.com/questions/52454982/django-transaction-and-select-for-update) — in autocommit mode the rows are simply not locked, so the lock and the atomic block are inseparable in this design. (Content was rephrased for compliance with licensing restrictions.)
 
-**Version guard for correct rejection semantics.** The lock makes the second request *see* the new state, but Requirement 4.7 wants a specific outcome: reject with a message stating the state changed *since the request was formed*. That requires knowing what the requester believed. So `leads` carries `state_version INTEGER NOT NULL DEFAULT 0`, rendered into every transition form as a hidden field, and the write is conditional:
+**Version guard for correct rejection semantics.** The lock makes the second request *see* the new state, but Requirement 4.7 wants a specific outcome: reject with a message stating the state changed *since the request was formed*. That requires knowing what the requester believed. Requirement 4.13 now states the mechanism: every accepted transition increments the Lead's `state_version` by one within the same transaction that persists the new Pipeline_State, and a request carrying a submitted `state_version` that differs from the current one is rejected at step 4 of the Requirement 4.12 pipeline with the state-changed message of Requirement 4.7, leaving the Pipeline_State and every associated Deal field unchanged and applying no second transition. Requirement 13.1 declares the column and states that it holds the count of accepted Pipeline_State changes applied to the Lead; Requirement 13.6 constrains it to a required non-negative integer defaulting to 0. So `leads` carries `state_version INTEGER NOT NULL DEFAULT 0`, rendered into every transition form as a hidden field, and the write is conditional:
 
 ```sql
 UPDATE leads
@@ -553,7 +561,7 @@ UPDATE leads
 -- rowcount 0  ⇒  someone else transitioned first  ⇒  reject (Req 4.7)
 ```
 
-Without the version guard, the second of two identical racing requests would be indistinguishable from a fresh valid request and could produce a second, legal-but-unintended transition. With it, a stale request is always rejected with the correct message. Requests originating from adapter events pass `expected_from_state` from the state read inside the same transaction and skip the version check, since an event has no user-facing form and no prior read.
+Why the guard is worth its cost, which is the rationale behind Requirement 4.13: without it, the second of two identical racing requests would be indistinguishable from a fresh valid request and could produce a second, legal-but-unintended transition. With it, a stale request is always rejected with the correct message, and because the increment shares the transaction with the status write, `state_version` is exactly the count of accepted transitions in the Lead's history — the invariant Property 45 asserts. Requests originating from adapter events pass `expected_from_state` from the state read inside the same transaction and skip the version check, since an event has no user-facing form and no prior read; the row lock alone serializes them.
 
 #### 3.5.4 Totality and history (Requirements 4.2, 4.5, 4.6)
 
@@ -636,6 +644,8 @@ class ComplianceGuard:
               outreach_request_id: UUID) -> ClearedOutreach: ...
 ```
 
+**Field naming.** This design uses the declared column names `unsubscribed_at` and `do_not_call_at` throughout; where the requirements say a Lead has "unsubscribed set" (Requirements 5.3, 5.11) or refer to "the Lead's unsubscribed field" (Requirement 5.8), that denotes `unsubscribed_at` being non-null, which is the bridge Requirement 13.1 states — the unsubscribed-set condition holds exactly when `unsubscribed_at` is set, and likewise for `do_not_call_at` (Requirements 5.4, 5.16).
+
 Blocking conditions by channel:
 
 | Condition | Channel | Requirement | Additional effect |
@@ -650,9 +660,9 @@ Blocking conditions by channel:
 
 Requirement 5.6 says bounces block "every subsequent email action". The bounce is scoped to the `contact_email` value it was recorded against, so correcting a typo'd address clears the block — which is the operationally correct behavior and the reason `email_bounces` stores the address rather than only the `lead_id`. The `manual_review_flag` persists regardless, so the correction still gets human attention.
 
-#### 3.6.3 Timezone resolution for the calling window (Requirements 5.5, 5.15)
+#### 3.6.3 Timezone resolution for the calling window (Requirements 5.5, 5.15, 5.17)
 
-An ordered resolution chain, all local — no network lookup, so the guard cannot be blocked by an outage:
+Requirement 5.17 states the resolution order and stops at the first source that yields a timezone: the Lead's `timezone` value when set, otherwise a timezone derived from the digits of the Lead's `contact_phone`, otherwise a timezone derived from the Lead's `region` value, otherwise absent — with no server default substituted, and the Requirement 5.15 block applied when the result is absent. Requirement 13.1 declares `timezone` and `region` as `leads` columns so that this chain has declared inputs, and Requirement 13.6 constrains `timezone` to an IANA name of at most 64 characters and `region` to text of at most 200 characters. The implementation is that chain in that order, all local — no network lookup, so the guard cannot be blocked by an outage:
 
 ```python
 def resolve_timezone(lead) -> tuple[ZoneInfo | None, TimezoneSource]:
@@ -665,7 +675,7 @@ def resolve_timezone(lead) -> tuple[ZoneInfo | None, TimezoneSource]:
     return None, UNKNOWN                                # ⇒ block calls (Req 5.15)
 ```
 
-Returning `None` **blocks** rather than falling back to a server default. A default would silently authorize a 06:00 cold call, which is precisely the harm Requirement 5.5 exists to prevent, and Requirement 5.15 makes the blocking behavior explicit.
+The four branches of `resolve_timezone` are the four sources of Requirement 5.17 in the stated order. Returning `None` **blocks** rather than falling back to a server default. A default would silently authorize a 06:00 cold call, which is precisely the harm Requirement 5.5 exists to prevent; Requirement 5.15 makes the blocking behavior explicit and Requirement 5.17 states the no-default rule and the same reason for it.
 
 **Ambiguous area codes.** Some NANP area codes span two zones. The design resolves these to the dominant zone and records `timezone_source = AREA_CODE`, and the Deal_Room_View displays the resolved local time together with a note that it was inferred from the phone number. The alternative — treating ambiguity as unknown and blocking — was rejected because Requirement 5.15 triggers only when the timezone *cannot be determined*, and it would block a large fraction of legitimately callable Leads. The mitigation is that the inferred value is always visible and always overridable via the explicit `leads.timezone` field.
 
@@ -843,6 +853,8 @@ class ReleaseGate:
 
 Note the ordering of the two rejection checks: `payment_verified_at is None` is evaluated **before** the state check, so a Deal in any state whatsoever with an unset flag is rejected with the payment-verification reason — which is exactly Requirement 8.9's "regardless of the Deal's Pipeline_State". Requirement 8.7 makes the same point for display: the control renders disabled with "payment verification outstanding" whenever the flag is unset, without consulting state.
 
+**Reading the flag, not the state, is specified.** Requirement 8.20 states that the Release_Gate evaluates the payment-verification precondition of Requirements 8.7, 8.8, and 8.9 by reading the Payment_Verified_Flag rather than the Deal's Pipeline_State — which is why the code above tests `deal.payment_verified_at`, the field the flag reads, and treats `lead.status` only as the separate state precondition of Requirement 8.8. The surrounding rules make that safe rather than merely conventional: Requirement 8.17 makes the verification timestamp the authoritative record and requires the flag to read as set for exactly those Deals whose timestamp is set; Requirement 8.18 requires the timestamp and the `Payment_Verified` Pipeline_State to be written in one transaction so neither is persisted without the other; Requirement 8.19 states that every Deal whose Lead is at `Payment_Verified` or `Released` has the timestamp set. Together they make "read the flag" and "read the state" agree for every committed Deal, so reading the authoritative field costs nothing and removes the divergence risk discussed in §6.1. `trg_deal_state_consistency` (§4.6) enforces Requirement 8.19 for every writer, and Property 44 asserts the whole set over arbitrary interleavings.
+
 The confirmation token is minted server-side when the confirmation screen renders, scoped to `(action, deal_id)`, single-use, and consumed inside the transaction. This is what makes the confirmation requirement server-enforced: a POST without a valid unconsumed token is rejected even if a client bypassed the dialog.
 
 #### 3.7.4 Layer 3 — database: at most one authorization, ever
@@ -921,7 +933,7 @@ All three timestamps come from a single logical clock source (`timezone.now()`, 
 
 **Payment recording (Requirement 8.3).** Driven by the `payment_received` event. Amount is validated as a whole dollar value in `[1, 1000]` — note the deliberately wider lower bound than `agreed_price`'s 550, because a partial payment is a real event that must be recordable in order to be shown as a shortfall.
 
-**Verification (Requirements 8.4–8.6, 8.14).** The view displays the recorded amount, the invoice amount, and the difference. Verification requires state `Paid_Pending_Verification` and an unset flag; otherwise it is rejected with a message distinguishing wrong-state from already-recorded (Requirement 8.14). When the amounts differ, the absolute difference is displayed labelled as shortfall or overpayment and a **second** confirmation token is required; absent that token the flag stays unset (Requirement 8.6). Setting the flag writes `payment_verified_at` at millisecond precision plus `verified_by_operator_id`, then requests the state transition — all in one transaction.
+**Verification (Requirements 8.4–8.6, 8.14).** The view displays the recorded amount, the invoice amount, and the difference. Verification requires state `Paid_Pending_Verification` and an unset flag; otherwise it is rejected with a message distinguishing wrong-state from already-recorded (Requirement 8.14). When the amounts differ, the absolute difference is displayed labelled as shortfall or overpayment and a **second** confirmation token is required; absent that token the flag stays unset (Requirement 8.6). Setting the flag writes `payment_verified_at` at millisecond precision plus `verified_by_operator_id` — both declared as `deals` columns by Requirement 13.2 — then requests the state transition, all in one transaction as Requirement 8.18 requires.
 
 **Delivery failure (Requirement 8.16).** The authorization is retained, `delivery_sent`/`delivered_date` stay unset, state stays `Payment_Verified`, the failure reason is displayed, and a retry control submits at most one delivery request per activation (the retry consumes a fresh single-use token, so a double-click cannot double-send). Retaining the authorization is deliberate: the human decision was made and recorded, and re-asking for it would both annoy the Operator and create a second authorization row, which the unique constraint forbids anyway.
 
@@ -1004,7 +1016,7 @@ Payload contents per event type: reply excerpt truncated at 500 characters (Requ
 
 **Retries (Requirement 9.8).** A Celery task per `(notification, channel)`. On failure it retries with `countdown=60`, `max_retries=3`, giving the initial attempt plus up to 3 further attempts at 60-second intervals, then records the outcome as `failed` with the attempt count. Success records `delivered`. Retries never create a new notification row (Requirement 9.10) because the row already exists before the first delivery attempt — delivery is an update to `notification_deliveries`, not an insert into `notifications`.
 
-**60-second SLA (Requirements 9.1–9.4, 6.1).** Generation happens in the triggering transaction and enqueueing happens in `transaction.on_commit`, so the worker picks the task up within its poll interval. The SLA is on *generation* plus first delivery attempt, which this comfortably meets; the retry ladder may extend past 60 seconds for a failing channel, which the requirement permits since it specifies the retry schedule separately.
+**60-second SLA (Requirements 9.1–9.4, 9.13, 6.1).** Requirement 9.13 states the scope of the bound: the 60 seconds cover generating the notification and the *first* delivery attempt on each enabled channel, and each further attempt scheduled under Requirement 9.8 is permitted to complete after the bound has elapsed. The design meets that scope structurally — generation happens in the triggering transaction and enqueueing happens in `transaction.on_commit`, so the worker picks the task up within its poll interval and the first attempt on each enabled channel lands well inside the bound. The retry ladder for a failing channel extends past 60 seconds, which is exactly what Requirement 9.13 permits, so a persistently failing Slack webhook is a delivery failure recorded under Requirement 9.8 and never an SLA violation.
 
 **Slack without a webhook (Requirement 9.12)** rejects the enable request, leaves the setting disabled, and displays that a webhook target is required.
 
@@ -1329,16 +1341,16 @@ erDiagram
         smallint researched_score "1-5"
         integer preferred_price "550-1000 or null, bot-owned hint"
         text status "Pipeline_State, CHECK"
-        integer state_version "optimistic concurrency"
-        smallint website_condition "NEW, 1-5, pricing input"
-        smallint urgency "NEW, 1-5, pricing input"
-        integer estimated_page_count "NEW, pre-generation pricing input"
-        text timezone "IANA name or null"
-        text region
-        timestamptz unsubscribed_at "null = not unsubscribed"
-        timestamptz do_not_call_at "null = callable"
-        boolean manual_review_flag
-        timestamptz last_activity_at "denormalized, Req 2.1"
+        integer state_version "Req 13.1, 13.6, 4.13 - accepted transition count"
+        smallint website_condition "Req 13.1, 13.6 - 1-5, pricing input"
+        smallint urgency "Req 13.1, 13.6 - 1-5, pricing input"
+        integer estimated_page_count "Req 13.1, 13.6 - pre-generation pricing input"
+        text timezone "Req 13.1, 13.6 - IANA name or null"
+        text region "Req 13.1, 13.6 - text or null"
+        timestamptz unsubscribed_at "Req 13.1 - null = not unsubscribed"
+        timestamptz do_not_call_at "Req 13.1 - null = callable"
+        boolean manual_review_flag "Req 13.1, 13.6 - default false"
+        timestamptz last_activity_at "Req 13.1, 13.14 - denormalized, Req 2.1"
         timestamptz created_at "required"
     }
 
@@ -1350,8 +1362,8 @@ erDiagram
         bigint invoice_id FK
         boolean payment_received
         date paid_date
-        timestamptz payment_verified_at "THE verification source of truth"
-        bigint verified_by_operator_id FK
+        timestamptz payment_verified_at "Req 13.2, 8.17 - ms precision, THE verification source of truth"
+        bigint verified_by_operator_id FK "Req 13.2, 8.5"
         boolean delivery_sent "trigger-guarded"
         timestamptz delivered_date "trigger-guarded"
     }
@@ -1366,7 +1378,7 @@ erDiagram
     PIPELINE_STATE_HISTORY {
         bigint id PK "append sequence"
         bigint lead_id FK
-        text from_state "null only for the New_Lead genesis row"
+        text from_state "Req 13.13 - null only for the New_Lead genesis row"
         text to_state
         timestamptz occurred_at
         bigint actor_id FK "null when adapter-sourced"
@@ -1411,7 +1423,7 @@ The database is shared with the future bot, so every table has a declared writer
 |---|---|---|---|
 | `leads` (discovery fields: `company_name`, `industry`, `website_url`, `owner`, `researched_score`, `preferred_price`) | read | **write** | Dashboard treats these read-only except `contact_*` |
 | `leads.contact_name / contact_email / contact_phone` | **write** | write (initial) | Dashboard edits are audited (Req 3.6) |
-| `leads.website_condition / urgency / estimated_page_count` | **write** | write (research) | New per §2.1; part of the shared contract |
+| `leads.website_condition / urgency / estimated_page_count` | **write** | write (research) | Declared by Req 13.1; part of the shared contract (§2.1) |
 | `leads.status`, `leads.state_version` | **write (exclusive)** | never | Bot requests transitions only via adapter events |
 | `leads.unsubscribed_at / do_not_call_at / manual_review_flag` | **write** (via events) | never directly | Set by event intake, not by the bot writing rows |
 | `leads.last_activity_at` | **write (exclusive)** | never | Denormalized; bot activity arrives via events |
@@ -1443,9 +1455,14 @@ Constraints are declared in the database, not only in forms, so the invariant ho
 | `leads` | `researched_score BETWEEN 1 AND 5` | 13.6 |
 | `leads` | `preferred_price IS NULL OR BETWEEN 550 AND 1000` | 13.6 |
 | `leads` | `status IN (…11 values…)` | 13.7 |
-| `leads` | `website_condition IS NULL OR BETWEEN 1 AND 5`; `urgency IS NULL OR BETWEEN 1 AND 5`; `estimated_page_count IS NULL OR BETWEEN 0 AND 200` | §2.1, 7.1 |
+| `leads` | `website_condition IS NULL OR BETWEEN 1 AND 5`; `urgency IS NULL OR BETWEEN 1 AND 5`; `estimated_page_count IS NULL OR BETWEEN 0 AND 200` | 13.1, 13.6, 7.1 |
+| `leads` | `state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0)` | 13.1, 13.6, 4.13 |
+| `leads` | `manual_review_flag BOOLEAN NOT NULL DEFAULT false` | 13.1, 13.6, 5.6 |
+| `leads` | `timezone IS NULL OR char_length ≤ 64` (IANA name); `region IS NULL OR char_length ≤ 200` | 13.1, 13.6, 5.17 |
+| `leads` | `unsubscribed_at`, `do_not_call_at`, `last_activity_at` each `TIMESTAMPTZ` or NULL | 13.1, 13.6, 13.11 |
 | `deals` | `lead_id` NOT NULL **UNIQUE** | 13.2, 13.12 |
 | `deals` | `agreed_price IS NULL OR BETWEEN 550 AND 1000` | 7.6, 13.2 |
+| `deals` | `payment_verified_at TIMESTAMPTZ(3)` or NULL; `verified_by_operator_id REFERENCES operators(id)` or NULL | 13.2, 8.5, 8.17 |
 | `emails` | `lead_id`, `sent_at` NOT NULL; `subject` 1–200; `body` 1–50000; `unsubscribed` NOT NULL DEFAULT false | 13.3 |
 | `emails` | `outreach_request_id` UNIQUE | 5.12 |
 | `calls` | `attempt_number BETWEEN 1 AND 20`; `outcome IN ('answered','busy','no-answer')`; `notes` ≤ 5000 | 13.4 |
@@ -1456,7 +1473,7 @@ Constraints are declared in the database, not only in forms, so the invariant ho
 | `payments` | `amount_usd BETWEEN 1 AND 1000` | 8.3 |
 | `release_authorizations` | `deal_id` **UNIQUE**; `operator_id` NOT NULL | 8.13, 8.10 |
 | `notifications` | UNIQUE `(event_id, operator_id)` | 9.10 |
-| `notification_deliveries` | UNIQUE `(notification_id, channel)`; `attempt_count BETWEEN 1 AND 4`; `outcome IN ('delivered','failed')` | 9.8, 9.10 |
+| `notification_deliveries` | UNIQUE `(notification_id, channel)`; `attempt_count BETWEEN 1 AND 4`; `outcome IN ('delivered','failed')` | 13.15, 9.8, 9.10 |
 | `processed_events` | `event_id` PRIMARY KEY, 1–128 chars | 12.2, 12.5 |
 | all timestamps | `TIMESTAMPTZ` (UTC), precision ≥ 1s; millisecond where required | 13.11, 8.5, 8.8 |
 
@@ -1464,9 +1481,11 @@ A violation rejects the write, leaves every stored value unchanged, and reports 
 
 ### 4.4 `pipeline_state_history` — why it is a table and not a log
 
+Requirement 13.5 names `pipeline_state_history` as a dedicated table whose records each carry a required `lead_id` and which is keyed by `lead_id` and occurrence timestamp. Requirement 13.13 states its write rule and its shape: exactly one record per accepted Pipeline_State change, containing `lead_id`, `from_state`, `to_state`, `occurred_at`, and the acting actor (the Operator who requested the change or the Pipeline_Adapter that reported the event), with `from_state` unset only on the genesis record whose `to_state` is New_Lead, and at most one genesis record per Lead — so that the Reached_Count of Requirement 10.1, the Cohort of Requirement 10.2, and the recorded-history invariant of Requirement 4.6 are computable from stored records.
+
 It serves three consumers with different needs, which is why it is normalized relational data rather than application log lines: the state machine writes it as part of its transaction; the Analytics_View reads it for every `Reached_Count` and the cohort funnel (§3.11.1); the Deal_Room_View reads it for the activity feed (Requirement 3.3). It also carries `audit_entry_id`, linking each transition to the audit entry written in the same transaction, so "who moved this Lead to Won and when" is a single join.
 
-`from_state` is `NULL` only on the genesis row (Requirement 4.5). A `CHECK` enforces that: `(from_state IS NULL) = (to_state = 'New_Lead')` is too strong (a Lead cannot return to New_Lead, so it is exactly right) — declared as `CHECK (from_state IS NOT NULL OR to_state = 'New_Lead')` plus a partial unique index guaranteeing at most one genesis row per Lead:
+The two structural rules of Requirement 13.13 are declared rather than merely followed. `from_state` is `NULL` only on the genesis row (Requirements 13.13, 4.5). A `CHECK` enforces that: `(from_state IS NULL) = (to_state = 'New_Lead')` is too strong (a Lead cannot return to New_Lead, so it is exactly right) — declared as `CHECK (from_state IS NOT NULL OR to_state = 'New_Lead')` plus a partial unique index guaranteeing at most one genesis row per Lead:
 
 ```sql
 CREATE UNIQUE INDEX one_genesis_row_per_lead
@@ -1477,15 +1496,19 @@ This is the partial-unique-index pattern PostgreSQL supports via `CREATE UNIQUE 
 
 ### 4.5 Contacts, variants, and the remaining tables
 
+Requirement 13.5 enumerates every table in this section by name — `site_pages`, `contacts`, `pipeline_state_history`, `processed_events`, `outreach_requests`, `rejected_events`, `adapter_invocations`, `email_bounces`, `notifications`, `notification_deliveries`, `notification_preferences`, `login_attempts`, `variants`, and `email_variant_assignments` — together with the keying rule for each, so none of them is a design-local addition. It also states the general referential rule: every record carrying a `lead_id` or `deal_id` reference identifies an existing Lead or Deal record.
+
 `contacts` (Requirement 13.5) holds additional contact people per Lead beyond the primary `contact_*` fields on `leads`, each with a required `lead_id`.
 
-`variants(id, dimension, value)` with `dimension IN ('subject_line','body_length','cta_style','send_timing','price_anchor')` (Requirement 10.6), and `email_variant_assignments(email_id, variant_id)` with a unique constraint on `(email_id, dimension)` — via a denormalized `dimension` column — so one email carries at most one value per dimension. Without that constraint the Requirement 10.6 send counts would double-count.
+`variants(id, dimension, value)` with `dimension IN ('subject_line','body_length','cta_style','send_timing','price_anchor')`, keyed by dimension and value (Requirements 13.5, 10.6), and `email_variant_assignments(email_id, variant_id)` keyed by email identifier and Variant dimension (Requirement 13.5) with a unique constraint on `(email_id, dimension)` — via a denormalized `dimension` column — so one email carries at most one value per dimension. Without that constraint the Requirement 10.6 send counts would double-count.
 
-`site_pages(site_project_id, page_index, text_content)` stores generated page text locally for the review surface (§3.8).
+`site_pages(site_project_id, page_index, text_content)` carries the required `site_project_id` of Requirement 13.5 and stores generated page text locally for the review surface (§3.8).
 
-`email_bounces(lead_id, contact_email, reason, occurred_at)` scopes bounces to the address (§3.6.2).
+`email_bounces(lead_id, contact_email, reason, occurred_at)` (Requirement 13.5) scopes bounces to the address (§3.6.2).
 
-`adapter_invocations`, `rejected_events`, `outreach_requests`, and `login_attempts` are the bookkeeping tables described in their respective sections.
+`notifications`, `notification_deliveries` (keyed by notification identifier and channel), and `notification_preferences` (holding the Notification_Subscription and Channel_Delivery_Setting values of Requirement 9.7) are the notification tables of Requirement 13.5, described in §3.10 and §2.5.
+
+`adapter_invocations` (the stub-mode operation names and arguments of Requirement 12.3), `rejected_events` (the rejected payloads and reasons of Requirements 12.6 and 12.9), `processed_events` (keyed by the Requirement 12.2 event identifier), `outreach_requests` (keyed by the Requirement 5.9 `outreach_request_id`), and `login_attempts` are the bookkeeping tables of Requirement 13.5, described in their respective sections.
 
 ### 4.6 Trigger inventory
 
@@ -1495,7 +1518,7 @@ Every trigger exists because the corresponding requirement is phrased as an inva
 |---|---|---|---|
 | `trg_delivery_guard` | `deals` BEFORE UPDATE | `delivery_sent` requires verified payment + authorization + timestamp ordering | 8.11, 8.12 |
 | `trg_agreed_price_frozen` | `deals` BEFORE UPDATE | `agreed_price` immutable once an invoice exists | 7.11 |
-| `trg_deal_state_consistency` | `deals` BEFORE UPDATE | `payment_verified_at` non-null whenever the Lead is at or past `Payment_Verified` | 8.5, §6.1 |
+| `trg_deal_state_consistency` | `deals` BEFORE UPDATE | `payment_verified_at` non-null whenever the Lead is at or past `Payment_Verified`, so the flag and the state cannot diverge | 8.17, 8.18, 8.19, 8.20, 8.5 |
 | `trg_no_email_after_unsubscribe` | `emails` BEFORE INSERT | reject if `sent_at ≥ leads.unsubscribed_at` | 5.11 |
 | `trg_no_email_after_bounce` | `emails` BEFORE INSERT | reject if a bounce exists for the Lead's current `contact_email` | 5.6 |
 | `trg_no_call_after_dnc` | `calls` BEFORE INSERT | reject if `timestamp ≥ leads.do_not_call_at` | 5.16 |
@@ -1556,7 +1579,7 @@ The leading-column-plus-`occurred_at DESC` shape means each single-filter search
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
-The requirements are unusually property-dense: 24 acceptance criteria are already phrased as `FOR ALL … SHALL` invariants. The properties below were derived by classifying every acceptance criterion (property / example / edge case / integration / smoke) and then consolidating logically redundant candidates — for instance the precondition-check form and the invariant form of the same compliance rule collapse into the invariant form, which is strictly stronger because it holds over arbitrary action interleavings rather than at a single call site.
+The requirements are unusually property-dense: 23 acceptance criteria are phrased as `FOR ALL … SHALL` invariants, three of them added in the revision that declared the fields this design depends on — Requirements 8.19, 10.15, and 13.14. The properties below were derived by classifying every acceptance criterion (property / example / edge case / integration / smoke) and then consolidating logically redundant candidates — for instance the precondition-check form and the invariant form of the same compliance rule collapse into the invariant form, which is strictly stronger because it holds over arbitrary action interleavings rather than at a single call site.
 
 Each property names the component that upholds it, the generator that exercises it, and the invariant asserted.
 
@@ -1630,7 +1653,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `PipelineStateMachine.request` over `LEGAL_TRANSITIONS` (§3.5.1, §3.5.2)
 - **Generator**: all 121 ordered pairs of the 11 states, each with a fixture built to satisfy the target's preconditions where they exist
 - **Invariant**: `accepted == (pair in LEGAL_TRANSITIONS and preconditions_met)`; rejection leaves a byte-identical snapshot apart from one audit row; the message class matches the pipeline order, which is what makes the terminal-first evaluation of Requirement 4.4 observable
-- **Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.11**
+- **Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.11, 4.12**
 
 ### Property 9: Recorded state history is always a legal path from New_Lead
 
@@ -1638,8 +1661,8 @@ Each property names the component that upholds it, the generator that exercises 
 
 - **Upheld by**: the state machine writing `pipeline_state_history` inside the transition transaction (§3.5.4)
 - **Generator**: a Hypothesis `RuleBasedStateMachine` whose rules are `request_transition(random target state)`, `deliver_adapter_event(random event type)`, and `attempt_creation_with_state(random state)`
-- **Invariant**: checked after **every** rule — `history[0].to_state == New_Lead`; all consecutive pairs `∈ LEGAL_TRANSITIONS`; no self-pairs; nothing after a terminal
-- **Validates: Requirements 4.5, 4.6**
+- **Invariant**: checked after **every** rule — `history[0].to_state == New_Lead`; all consecutive pairs `∈ LEGAL_TRANSITIONS`; no self-pairs; nothing after a terminal; exactly one record per accepted transition, with `from_state` unset on exactly one genesis record per Lead whose `to_state` is New_Lead (Requirement 13.13)
+- **Validates: Requirements 4.5, 4.6, 13.13**
 
 ### Property 10: Every transition request is accepted-and-applied or rejected-and-unchanged, never both and never partially
 
@@ -1670,7 +1693,7 @@ Each property names the component that upholds it, the generator that exercises 
 
 ### Property 13: No prospect email is ever sent after an unsubscribe, and no call after a do-not-call
 
-*For all* Leads with `unsubscribed` set, the count of prospect-email rows whose `sent_at` is at or after the unsubscribe timestamp is zero; *for all* Leads with `do_not_call` set, the count of call rows whose timestamp is at or after the do-not-call timestamp is zero — and this holds over arbitrary interleavings of opt-out events, single sends, bulk sends, and retries.
+*For all* Leads with `unsubscribed_at` set, the count of prospect-email rows whose `sent_at` is at or after that `unsubscribed_at` value is zero; *for all* Leads with `do_not_call_at` set, the count of call rows whose timestamp is at or after that `do_not_call_at` value is zero — and this holds over arbitrary interleavings of opt-out events, single sends, bulk sends, and retries.
 
 - **Upheld by**: the `ComplianceGuard` chokepoint plus the `trg_no_email_after_unsubscribe` and `trg_no_call_after_dnc` database triggers (§3.6.1)
 - **Generator**: a stateful machine over a pool of Leads with rules `deliver_unsubscribe_event`, `deliver_bounce_event`, `set_do_not_call`, `attempt_single_send`, `attempt_bulk_send`, `attempt_call`, `retry_last_outreach`, `change_contact_email`
@@ -1682,9 +1705,9 @@ Each property names the component that upholds it, the generator that exercises 
 *For any* Lead timezone and *any* instant, a call action is permitted if and only if the Lead's local wall-clock time satisfies `08:00 ≤ local < 20:00`; when the Lead's timezone cannot be resolved from any available signal, the call is always blocked and no call row is recorded.
 
 - **Upheld by**: `ComplianceGuard.resolve_timezone` and the window check (§3.6.3)
-- **Generator**: random IANA timezone names (including half-hour and 45-minute offsets), random instants biased toward the 08:00 and 20:00 boundaries and toward DST transition dates, and Leads stripped of every timezone signal
-- **Invariant**: `permitted == (8 <= local_hour < 20)` for resolvable Leads; `permitted == False` for unresolvable ones; zero call rows on every block
-- **Validates: Requirements 5.5, 5.15**
+- **Generator**: random IANA timezone names (including half-hour and 45-minute offsets), random instants biased toward the 08:00 and 20:00 boundaries and toward DST transition dates, Leads stripped of every timezone signal, and Leads carrying *conflicting* signals — an explicit `timezone`, phone digits, and a `region` that resolve to different zones — so the Requirement 5.17 precedence is observable
+- **Invariant**: `permitted == (8 <= local_hour < 20)` for resolvable Leads; the resolved zone equals the first source present in the Requirement 5.17 order and `timezone_source` names that source; `permitted == False` with no server default applied for unresolvable ones; zero call rows on every block
+- **Validates: Requirements 5.5, 5.15, 5.17**
 
 ### Property 15: One outreach action produces at most one recorded row, and retries reuse its identifier
 
@@ -1738,16 +1761,16 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `Pricing_Advisor.suggested_price` and `resolve_inputs` (§3.9, §2.1)
 - **Generator**: the full integer domain of the three inputs, plus all seven non-empty subsets of absent attributes; also out-of-domain values to confirm they are rejected upstream rather than silently computed
 - **Invariant**: `result == independently_recomputed_formula`; `isinstance(result, int)`; `550 <= result <= 1000`; on any absence `result == 850 and is_fallback and set(missing) == absent_set`
-- **Validates: Requirements 7.1, 7.2, 7.7, 7.10**
+- **Validates: Requirements 7.1, 7.2, 7.7, 7.10, 7.12**
 
 ### Property 21: A persisted agreed_price is always operator-submitted and always within the band
 
 *For all* Deal records with `agreed_price` set, the value is an integer greater than or equal to 550 and less than or equal to 1000 and traces to an Operator-submitted price-change Audit_Entry; no Suggested_Price computation ever writes the field; a submission that is blank, non-numeric, non-whole, or outside the band is rejected with the previously persisted value retained or the field left unset; and once an invoice exists for the Deal, no change request alters the persisted value.
 
 - **Upheld by**: `PriceService` as the sole writer, the `agreed_price` CHECK constraint, and `trg_agreed_price_frozen` (§3.9, §3.7.6)
-- **Generator**: a stateful machine with rules `submit_price(random value from ints, floats, blanks, strings, out-of-band ints)`, `compute_suggestion`, `create_invoice`, `submit_price_after_invoice`
-- **Invariant**: after every rule, every non-null `agreed_price` is an integer in `[550, 1000]` with a matching operator-actor audit entry; `compute_suggestion` never changes any `agreed_price`; no post-invoice value differs from the value at issue time
-- **Validates: Requirements 7.3, 7.4, 7.5, 7.6, 7.8, 7.9, 7.11**
+- **Generator**: a stateful machine with rules `submit_price(random value from ints, floats, blanks, strings, out-of-band ints)`, `compute_suggestion`, `create_invoice`, `submit_price_after_invoice`, `set_preferred_price(random in-band value)`
+- **Invariant**: after every rule, every non-null `agreed_price` is an integer in `[550, 1000]` with a matching operator-actor audit entry; `compute_suggestion` never changes any `agreed_price`; changing `preferred_price` changes neither the Suggested_Price nor any `agreed_price` (Requirement 7.13); no post-invoice value differs from the value at issue time
+- **Validates: Requirements 7.3, 7.4, 7.5, 7.6, 7.8, 7.9, 7.11, 7.13**
 
 ### Property 22: Everything delivered was verified, authorized, and correctly ordered
 
@@ -1764,8 +1787,8 @@ Each property names the component that upholds it, the generator that exercises 
 
 - **Upheld by**: the structural absence of any path from the event intake to the Release_Gate, the precondition ordering that checks the verification flag first, and the delivery trigger (§3.7.2, §3.7.3)
 - **Generator**: a stateful machine whose rule set deliberately **excludes** `confirm_release` — only events, payments, state requests, bulk actions, and non-release Operator actions — plus a separate direct-POST generator issuing release requests across all 11 Pipeline_States with the flag unset
-- **Invariant**: after every rule, `count(release_authorizations) == 0`, `count(deals where delivery_sent) == 0`, and `count(adapter_invocations where operation == send_delivery_email) == 0`; each direct release POST yields rejection plus exactly one audit row and zero created records
-- **Validates: Requirements 8.9, 8.10, 8.12**
+- **Invariant**: after every rule, `count(release_authorizations) == 0`, `count(deals where delivery_sent) == 0`, and `count(adapter_invocations where operation == send_delivery_email) == 0`; each direct release POST yields rejection plus exactly one audit row and zero created records, and the rejection reason is the payment-verification reason for every one of the 11 states — which is what makes the flag-not-state reading of Requirement 8.20 observable
+- **Validates: Requirements 8.9, 8.10, 8.12, 8.20**
 
 ### Property 24: Concurrent Approve Release confirmations collapse to one authorization and one delivery
 
@@ -1836,8 +1859,8 @@ Each property names the component that upholds it, the generator that exercises 
 
 - **Upheld by**: the cohort restriction of §2.4
 - **Generator**: random Leads with random legal transition paths, deliberately including Leads whose New_Lead entry falls outside the range while later entries fall inside — the exact case that breaks a non-cohort funnel
-- **Invariant**: `counts[i] >= counts[i+1]` for every consecutive pair; every drop-off count `>= 0`; every drop-off percentage in `[0, 1]`
-- **Validates: Requirements 10.2**
+- **Invariant**: `counts[i] >= counts[i+1]` for every consecutive pair; every drop-off count `>= 0`; every drop-off percentage in `[0, 1]`; and no clamping is applied anywhere in the computation, as Requirement 10.15 requires
+- **Validates: Requirements 10.2, 10.15**
 
 ### Property 32: Out-of-range records never influence an in-range metric
 
@@ -1925,9 +1948,9 @@ Each property names the component that upholds it, the generator that exercises 
 *For any* constrained column in the schema and *any* value outside its declared bound, the write is rejected, every stored field value is left unchanged, and an error identifies the field and the violated constraint; *for any* value inside the bound the write is accepted; and every timestamp column stores a UTC value at one-second precision or finer.
 
 - **Upheld by**: database CHECK constraints and column types (§4.3)
-- **Generator**: a declarative table of `(model, field, bound)` triples driving generation of values just inside and just outside each bound — string lengths at limit and limit+1, integers at each end of every range, arbitrary strings for every enum-constrained column
-- **Invariant**: `accepted == within_bound(value)`; rejection leaves an unchanged snapshot and names the field; every timestamp round-trips as a UTC-aware value
-- **Validates: Requirements 13.1, 13.3, 13.4, 13.6, 13.7, 13.8, 13.11**
+- **Generator**: a declarative table of `(model, field, bound)` triples covering every constrained column of §4.3 — including the `leads` pricing inputs, `state_version`, `manual_review_flag`, `timezone`, and `region`, the `deals` money and verification columns, and the `notification_deliveries` attempt count and outcome — driving generation of values just inside and just outside each bound: string lengths at limit and limit+1, integers at each end of every range, arbitrary strings for every enum-constrained column, and a missing value for every `NOT NULL` column with a declared default
+- **Invariant**: `accepted == within_bound(value)`; rejection leaves an unchanged snapshot and names the field; a column with a declared default takes that default when the value is omitted; every timestamp round-trips as a UTC-aware value
+- **Validates: Requirements 13.1, 13.2, 13.3, 13.4, 13.6, 13.7, 13.8, 13.11, 13.15**
 
 ### Property 42: Referential integrity holds and each Lead has at most one Deal
 
@@ -1937,6 +1960,33 @@ Each property names the component that upholds it, the generator that exercises 
 - **Generator**: every dependent table × random absent reference ids; and random sequences of 1–10 Deal creation attempts per Lead, including concurrent attempts on separate connections
 - **Invariant**: every unresolved-reference write is rejected with an unchanged snapshot; `count(deals per lead) <= 1` after every attempt
 - **Validates: Requirements 13.5, 13.9, 13.12**
+
+### Property 43: last_activity_at always equals the latest source timestamp
+
+*For all* Lead records and *any* interleaving of the writes that advance activity, the stored `last_activity_at` equals the maximum over that Lead's email `sent_at`, `opened_at`, `clicked_at`, and `reply_at` values, its call record timestamps, its Pipeline_State change timestamps, and its Operator action timestamps, and is unset when the Lead has none of those source timestamps.
+
+- **Upheld by**: the denormalized `leads.last_activity_at` column advanced inside the same transaction as every write that can advance it, with the nightly consistency job as the independent verifier (§3.3)
+- **Generator**: a stateful machine over one Lead whose rules each write exactly one source timestamp — `record_email(sent_at)`, `apply_email_event(open | click | reply)`, `record_call(timestamp)`, `accept_transition`, `perform_audited_operator_action` — applied in Hypothesis-chosen orders, with timestamps drawn to include out-of-order values that are earlier than the current maximum, values equal to it, and duplicate values
+- **Invariant**: after every rule, `lead.last_activity_at == max(all source timestamps)` recomputed independently from the source tables, and `lead.last_activity_at is None` exactly when the recomputed set is empty — so an out-of-order write never moves the value backwards
+- **Validates: Requirements 13.14**
+
+### Property 44: The verification timestamp and the Payment_Verified state never diverge
+
+*For any* interleaving of the money path with attempts to write the Pipeline_State and the verification timestamp independently of each other, the Payment_Verified_Flag reads as set for exactly those Deal records whose `payment_verified_at` is set, and every Deal whose Lead Pipeline_State is Payment_Verified or Released has `payment_verified_at` set.
+
+- **Upheld by**: `payment_verified_at` as the single source of truth that the flag reads, the one-transaction write of the timestamp and the state, and `trg_deal_state_consistency` enforcing the implication for every writer (§3.7.3, §3.7.6, §4.6, §6.1)
+- **Generator**: the `ReleaseSafetyMachine` rule set — `set_price`, `create_invoice`, `deliver_payment_event`, `verify_payment`, `confirm_release`, `fail_delivery`, `retry_delivery`, `request_random_transition`, `deliver_random_event` — plus rules that attempt the two writes separately: `write_state_only(Payment_Verified | Released)` and `write_verification_timestamp_only`, each issued through the ORM and through raw SQL so the trigger is exercised as well as the service layer
+- **Invariant**: after every rule, `{d : d.payment_verified_flag} == {d : d.payment_verified_at is not None}`, and every Deal whose Lead status is `Payment_Verified` or `Released` has a non-null `payment_verified_at`; a divergent write is rejected rather than persisted
+- **Validates: Requirements 8.17, 8.18, 8.19**
+
+### Property 45: state_version increments once per accepted transition and stale versions are always rejected
+
+*For any* sequence of Pipeline_State change requests carrying correct, stale, and future `state_version` values — including concurrent submissions of the same version — the Lead's `state_version` equals the number of accepted transitions in that Lead's recorded history, and a request whose submitted version differs from the current version is rejected with the state-changed message, applies no Pipeline_State change, and leaves every associated Deal field unchanged.
+
+- **Upheld by**: the conditional `UPDATE` that increments `state_version` in the same transaction as the status write, evaluated at step 4 of the Requirement 4.12 pipeline (§3.5.2, §3.5.3)
+- **Generator**: random sequences of transition requests over one Lead where each request's submitted version is drawn from `{current, current − k for random k, current + k for random k, absent}` and the target state is drawn from the full `PipelineState` enum; plus `N ∈ [2, 8]` concurrent submissions of the *same* version from separate database connections
+- **Invariant**: after every request, `lead.state_version == count(pipeline_state_history rows for that lead) − 1` (the genesis row is not a transition), which is equivalently the count of accepted transitions; every request with `submitted_version != current_version` is rejected with the state-changed message and leaves a snapshot identical apart from one rejected-attempt Audit_Entry; under concurrency exactly one submission of a shared version is accepted and `state_version` advances by exactly one
+- **Validates: Requirements 4.13**
 
 
 ---
@@ -1994,7 +2044,7 @@ Because the audit `INSERT` shares the action's transaction (§3.13.1), its failu
 
 ## Open Questions and Recommendations
 
-Two modeling questions in the requirements have not yet been ruled on by the user. Both are answered here with a recommendation and rationale; neither is silently designed in beyond what is stated.
+Two modeling questions remain. §6.1 asks for a confirmation the user has not yet given; §6.2 is settled as deliberately unspecified by the requirements' own `## Out of Scope` section and is recorded here only so the design's accommodations for the eventual change are written down. Neither is silently designed in beyond what the requirements state.
 
 ### 6.1 Should `Payment_Verified` be an explicit Pipeline_State?
 
@@ -2006,22 +2056,22 @@ Rationale for keeping it:
 2. **It gives the verification step its own funnel bucket and timestamp.** Time-from-payment-to-verification is a real operational metric — it measures how long a customer waits after paying — and it is only measurable if verification is a distinct recorded stage.
 3. **It makes the double gate visible.** The operator-in-the-loop philosophy asks for two deliberate human decisions (verify, then release). Two states make that legible in the UI and in the audit trail; one state with a flag makes the first decision feel like a checkbox.
 
-**The refinement.** As specified, the same fact is encoded twice — the `Payment_Verified` state and the Payment_Verified_Flag — which creates a divergence risk (a Deal whose state says verified but whose flag is unset, or the reverse). The design resolves this by making `deals.payment_verified_at` the single source of truth, writing both in the same transaction, and adding `trg_deal_state_consistency` (§4.6) asserting that a Lead at or past `Payment_Verified` always has a non-null `payment_verified_at`. Note that the gates read the **flag**, not the state (§3.7.3), because the flag is the authoritative fact; the state is the navigational representation of it.
+**The double encoding, and how the requirements now settle it.** Keeping the state means the same fact is encoded twice — the `Payment_Verified` Pipeline_State and the Payment_Verified_Flag — which without a stated rule would carry a divergence risk (a Deal whose state says verified but whose flag is unset, or the reverse). That rule is now specified rather than proposed. Requirement 8.17 makes the Deal's payment verification timestamp the authoritative record and requires the flag to read as set for exactly those Deals whose timestamp is set; Requirement 8.18 requires the timestamp and the `Payment_Verified` state to be written in one transaction so neither persists without the other; Requirement 8.19 requires the timestamp to be set for every Deal whose Lead is at `Payment_Verified` or `Released`; Requirement 8.20 requires the Release_Gate to evaluate its payment-verification precondition by reading the flag rather than the state. The design implements exactly that: `deals.payment_verified_at` is the single source of truth (§4.1), both writes share one transaction (§3.7.6), `trg_deal_state_consistency` (§4.6) enforces Requirement 8.19 for every writer including the future bot, and the gates read the **flag** (§3.7.3) because the flag is the authoritative fact while the state is the navigational representation of it. Property 44 asserts the non-divergence over arbitrary interleavings. So the double encoding is a recorded, enforced redundancy rather than an open risk — which removes the strongest argument against keeping the explicit state.
 
 **Cost accepted:** one extra state and one extra Operator click. Worth it.
 
 ### 6.2 There is no path out of a verified payment — refunds, chargebacks, and cancellations
 
-**The gap.** `Closed_Lost` is reachable from `New_Lead` through `Invoiced`, but not from `Paid_Pending_Verification`, `Payment_Verified`, or `Released`. `Released` and `Closed_Lost` are terminal. So once funds are confirmed, the pipeline has no representation for a refund, a chargeback, a payment dispute, or a post-delivery cancellation — and the originating business plan lists chargebacks and payment disputes as a live risk.
+**This is out of scope by declaration, not by omission.** The requirements document closes with an `## Out of Scope` section stating that post-payment refund, chargeback, and cancellation handling is deliberately not specified, that Requirement 4.1's transition table therefore carries no edge leaving `Paid_Pending_Verification`, `Payment_Verified`, or `Released` other than the forward edges listed there, that no refunded Pipeline_State value exists, and that a follow-up specification is required before the dashboard can represent a payment dispute — one that must settle whether a refund revokes a delivered website, whether it reverses the revenue figure of Requirement 10.12, and whether it requires a second approving Operator. This subsection is the design-side counterpart of that section and adds nothing to its scope.
 
-**This is currently out of scope and is not designed in.** No `Refunded` state, no `payment_disputes` table, and no transition edges for either exist in this design. Building them speculatively would mean inventing business rules the user has not specified: does a refund revoke the delivered site, does it reverse the revenue metric, does it require a second Operator's approval, what happens to the Release_Authorization.
+**What that means concretely in the design.** `Closed_Lost` is reachable from `New_Lead` through `Invoiced`, but not from `Paid_Pending_Verification`, `Payment_Verified`, or `Released`; `Released` and `Closed_Lost` are terminal. So once funds are confirmed the pipeline has no representation for a refund, a chargeback, a payment dispute, or a post-delivery cancellation — and the originating business plan lists chargebacks and payment disputes as a live risk. No `Refunded` state, no `payment_disputes` table, and no transition edges for either exist here, because building them would mean inventing exactly the business rules the requirements' Out of Scope section defers.
 
 **Recommendation for a follow-up requirement,** combining both mechanisms because they answer different questions:
 
 1. **A `payment_disputes` record** (dispute opened, amount, reason, provider reference, resolution, resolved_at) attached to the Deal, which annotates without moving the pipeline. This handles the common case: a dispute is opened, investigated, and lost or won, while the Deal's history stays intact. It is the lower-risk half and could ship first.
 2. **A `Refunded` terminal state** with new edges `Payment_Verified → Refunded` and `Released → Refunded`. The second edge is a genuine change to Requirement 4.1: it makes `Released` non-terminal, which today's design asserts is impossible at import time. That assertion is the *right* thing to trip — it will force an explicit decision rather than an accidental relaxation.
 
-Also needing a ruling in that follow-up: whether `Refunded` reverses the Requirement 10.12 revenue figure (which currently sums verified payments with no reversal concept), and whether a refund after release triggers any revocation of the delivered archive.
+The rulings that follow-up needs are the ones the requirements' Out of Scope section already names — whether a refund revokes a delivered website, whether it reverses the Requirement 10.12 revenue figure (which currently sums verified payments with no reversal concept), and whether it requires a second approving Operator — plus, from the design side, what happens to the existing Release_Authorization.
 
 **What this design does to accommodate the eventual change,** without implementing it:
 
@@ -2041,7 +2091,7 @@ Also needing a ruling in that follow-up: whether `Refunded` reverses the Require
 | Concern | Tool | Why |
 |---|---|---|
 | Test runner | `pytest` + `pytest-django` | Fixtures compose well with the transactional test cases this design needs |
-| Property-based testing | `hypothesis` (with `hypothesis[django]`) | The reference PBT library for Python; `RuleBasedStateMachine` is required for the six stateful invariants |
+| Property-based testing | `hypothesis` (with `hypothesis[django]`) | The reference PBT library for Python; `RuleBasedStateMachine` is required for the nine stateful invariants |
 | Fixtures | `factory_boy` | Generating Leads/Deals in specific pipeline states with satisfied preconditions |
 | Clock control | `time-machine` | The 12h/30m session boundaries, the 15-minute lockout window, the calling window across DST, the 60-second retry ladder |
 | Concurrency | `pytest-django` with `TransactionTestCase` + threads on separate connections | Properties 10, 24, 42 need genuine concurrent transactions, which `TestCase`'s single wrapping transaction cannot provide |
@@ -2049,11 +2099,11 @@ Also needing a ruling in that follow-up: whether `Refunded` reverses the Require
 | Adapter doubles | the real `StubPipelineAdapter` plus `respx` for the future live implementation | Testing against the stub is testing a shipped component, not a mock |
 | Architecture rules | `import-linter` | The release-gate and compliance-chokepoint contracts (§3.0.1, §3.7.2) |
 
-Property-based testing **is** appropriate for this feature. The system contains a finite state machine with a declared legal-edge set, a pure pricing function, several idempotency requirements, and twenty-four acceptance criteria already written as universally quantified invariants. Those are textbook property targets. The parts of the system that are *not* — server-rendered markup details, performance budgets, external provider wiring — are covered by the example, integration, and performance tiers below, per the prework classification.
+Property-based testing **is** appropriate for this feature. The system contains a finite state machine with a declared legal-edge set, a pure pricing function, several idempotency requirements, and twenty-three acceptance criteria already written as universally quantified invariants. Those are textbook property targets. The parts of the system that are *not* — server-rendered markup details, performance budgets, external provider wiring — are covered by the example, integration, and performance tiers below, per the prework classification.
 
 ### 7.2 Property-based tests
 
-Each of the 42 properties above is implemented as **exactly one** property-based test, configured for a minimum of 100 iterations and tagged with a comment referencing the design property.
+Each of the 45 properties above is implemented as **exactly one** property-based test, configured for a minimum of 100 iterations and tagged with a comment referencing the design property.
 
 ```python
 # Feature: deal-room-dashboard, Property 20: For all combinations of integer
@@ -2075,9 +2125,9 @@ def test_property_20_suggested_price_matches_formula_and_bounds(
     assert 550 <= result <= 1000
 ```
 
-**Iteration counts.** 100 is the floor. Cheap pure-function properties (20) run 200–1000. Database-backed stateful machines run 100 with `stateful_step_count` between 10 and 50. Concurrency properties (10, 24, 42) run 100 with `N` drawn per example.
+**Iteration counts.** 100 is the floor. Cheap pure-function properties (20) run 200–1000. Database-backed stateful machines run 100 with `stateful_step_count` between 10 and 50. Concurrency properties (10, 24, 42, 45) run 100 with `N` drawn per example.
 
-**The six stateful machines.** These carry the properties that only hold over interleavings, and they are the highest-value tests in the suite:
+**The nine stateful machines.** These carry the properties that only hold over interleavings, and they are the highest-value tests in the suite:
 
 | Machine | Rules | Invariants asserted after every step | Properties |
 |---|---|---|---|
@@ -2087,8 +2137,13 @@ def test_property_20_suggested_price_matches_formula_and_bounds(
 | `SiteGateMachine` | finish generation, approve, reject, regenerate, attempt send with/without preview URL | zero emails referencing a not-yet-approved site | 18 |
 | `ReleaseSafetyMachine` | set price, invoice, payment event, verify, confirm release, fail/retry delivery, random transition, random event | everything delivered was verified + authorized + correctly ordered | 22 |
 | `NoReleaseMachine` | the same rule set **minus** confirm release | zero authorizations, zero delivered Deals, zero delivery requests | 23 |
+| `LastActivityMachine` | record email, apply open/click/reply event, record call, accept transition, perform audited Operator action — each writing exactly one source timestamp, including out-of-order values | `last_activity_at` equals the maximum source timestamp, unset when none exist | 43 |
+| `VerificationConsistencyMachine` | the `ReleaseSafetyMachine` rule set **plus** write-state-only and write-timestamp-only, via ORM and raw SQL | the flag reads as set exactly when `payment_verified_at` is set; every Deal at Payment_Verified or Released has it set | 44 |
+| `StateVersionMachine` | transition requests carrying correct, stale, future, and absent `state_version` values; concurrent submissions of the same version | `state_version` equals the accepted-transition count; a mismatched version is always rejected and applies nothing | 45 |
 
 `ReleaseSafetyMachine` and `NoReleaseMachine` are deliberately separate rather than one machine with a flag. The positive invariant (Property 22) can hold trivially in a run where nothing is ever delivered, and the negative invariant (Property 23) can hold while the timestamp ordering is wrong. Splitting them means each is exercised against a generator that can actually falsify it.
+
+`VerificationConsistencyMachine` is likewise separate from `ReleaseSafetyMachine` rather than an extra invariant on it, because its two extra rules deliberately attempt writes the ordinary money path never issues — setting the state without the timestamp and the timestamp without the state — and those rules would falsify nothing if the machine's only invariant were the delivery-ordering one.
 
 `AuditCompletenessMachine` and `PriceProvenanceMachine` (Properties 33 and 21) reuse the `ReleaseSafetyMachine` rule set with different invariants, so they are implemented as invariant mixins rather than separate machines.
 
@@ -2102,13 +2157,14 @@ def test_property_20_suggested_price_matches_formula_and_bounds(
 
 ### 7.3 Unit and example-based tests
 
-Kept deliberately narrow, since the property tests cover input variation. Per the prework classification, example and edge-case tests cover: the Viewer default role (1.5); session boundary behavior at 11:59:59 / 12:00:00 and 29:59 / 30:00 (1.4, 1.12); sign-out timing (1.13); the zero-match list state (2.13); the list retrieval-failure state (2.15); the not-found Deal Room (3.7); the 100/101 bulk selection boundary (5.14); enabling Slack without a webhook (9.12); the empty analytics range (10.14); and 24-month audit retention under a frozen clock (11.8).
+Kept deliberately narrow, since the property tests cover input variation. Per the prework classification, example and edge-case tests cover: the Viewer default role (1.5); session boundary behavior at 11:59:59 / 12:00:00 and 29:59 / 30:00 (1.4, 1.12); sign-out timing (1.13); the zero-match list state (2.13); the list retrieval-failure state (2.15); the not-found Deal Room (3.7); the audited field-edit path with an accepted and a rejected value for each contact field and each pricing input, and the recomputed Suggested_Price after an accepted pricing-input edit (3.6, 3.8, 3.11, 3.12); the 100/101 bulk selection boundary (5.14); enabling Slack without a webhook (9.12); the empty analytics range (10.14); and 24-month audit retention under a frozen clock (11.8).
 
 ### 7.4 Integration tests
 
 Where behavior does not vary meaningfully with input, 1–3 examples are used instead of 100 iterations:
 
 - Slack webhook delivery to the recorded target and email delivery to the registered address (Requirements 9.5, 9.6) — mocked transport, asserting the destination.
+- The notification 60-second bound (Requirement 9.13) under a controlled clock: one event per event type, asserting that generation and the first delivery attempt on each enabled channel both complete inside the bound and that a subsequent retry is permitted to land outside it.
 - Stub-mode end-to-end: a full run from Lead creation through contact, quote, invoice, payment event, verification, release, and delivery, asserting the terminal state and the complete audit trail. This is the demo path and the smoke test that the dashboard is independently runnable without the bot.
 - Inbound webhook endpoint behavior for each of the seven event types against a live database.
 - A migration test asserting every trigger and constraint in §4.3 and §4.6 exists after a fresh migrate — the enforcement layers are only real if they are actually deployed.
@@ -2139,4 +2195,6 @@ The structural claims this design rests on are verified mechanically, because a 
 
 ### 7.7 Traceability
 
-Every acceptance criterion maps to at least one test. The mapping is maintained as a machine-checked table: each property test names its property in a `# Feature: deal-room-dashboard, Property N: …` comment, each property in this document lists its `Validates: Requirements X.Y` criteria, and a CI check asserts that the union of all validated criteria plus the criteria covered by the example, integration, and performance tiers equals the full set of acceptance criteria in `requirements.md`. A newly added criterion with no test therefore fails the build.
+Every acceptance criterion maps to at least one test. The mapping is maintained as a machine-checked table: each of the 45 property tests names its property in a `# Feature: deal-room-dashboard, Property N: …` comment, each property in this document lists its `Validates: Requirements X.Y` criteria, and a CI check asserts that the union of all validated criteria plus the criteria covered by the example, integration, and performance tiers equals the full set of acceptance criteria in `requirements.md`. A newly added criterion with no test therefore fails the build.
+
+That check is what pulled Properties 43, 44, and 45 into the suite: Requirements 13.14, 8.17–8.19, and 4.13 are stated invariants over stored data that no other tier can cover, so each needed its own universally quantified property rather than a share of an existing one. The other criteria stated since the previous revision are absorbed by properties already listed, whose `Validates` bullets name them: 4.12 by Property 8, 5.17 by Property 14, 7.12 by Property 20, 7.13 by Property 21, 8.20 by Property 23, 10.15 by Property 31, 13.13 by Property 9, and 13.2 and 13.15 by Property 41. Two are example-tier rather than property-tier: Requirement 9.13's scoping of the 60-second bound is an integration timing assertion (§7.4), and Requirements 3.11 and 3.12 are the pricing-input edit path, covered with the contact-field edit examples in §7.3.
