@@ -1,8 +1,8 @@
 # Design Document: Deal Room Dashboard
 
-> **Section numbering.** §1 Overview · §2 Key Design Decisions · §3.0 Architecture · §3.1–§3.14 Components and Interfaces · §4 Data Models · Correctness Properties (referenced by property number) · §5 Error Handling · §6 Open Questions · §7 Testing Strategy.
+> **Section numbering.** Top-level sections are referred to by name — Overview, Key Design Decisions, Architecture, Components and Interfaces, Data Models, Correctness Properties, Error Handling, Open Questions and Recommendations, Testing Strategy. Subsections keep their numbers, and cross-references written as §N.M point to them: §2.1–§2.7 under Key Design Decisions, §3.0 under Architecture, §3.1–§3.14 under Components and Interfaces, §4.1–§4.7 under Data Models, §5.1–§5.5 under Error Handling, §6.1–§6.2 under Open Questions and Recommendations, and §7.1–§7.7 under Testing Strategy. Correctness properties are referenced by property number.
 
-## 1. Overview
+## Overview
 
 The Deal_Room_Dashboard is the operator console for the Kiro AI system. It is a server-rendered Python web application backed by a single PostgreSQL database, and it is the **only** component in the system authorized to move money-adjacent state forward: setting an agreed price, issuing an invoice, verifying a payment, and releasing a finished website to a customer.
 
@@ -45,7 +45,7 @@ The requirements are not of uniform criticality, and the design reflects that or
 
 ---
 
-## 2. Key Design Decisions
+## Key Design Decisions
 
 This section records the decisions that shaped the rest of the document, including the schema gap flagged during requirements review and three latent inconsistencies discovered while designing against the acceptance criteria.
 
@@ -126,7 +126,7 @@ Because a synchronous external call must not happen inside a database transactio
 
 ---
 
-## 3. Architecture
+## Architecture
 
 ### 3.0 System Context and Component Structure
 
@@ -1283,7 +1283,7 @@ Every row of that table is idempotent in effect: timestamp fields are set to the
 
 ---
 
-## 4. Data Models
+## Data Models
 
 ### 4.1 Entity relationships
 
@@ -1585,7 +1585,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `AuthService.sign_in` returning a single constant failure message (§3.1)
 - **Generator**: pairs of (unknown identifier, arbitrary password) and (known identifier, arbitrary wrong password)
 - **Invariant**: response bodies are byte-identical after stripping CSRF tokens; no session cookie is set
-- **Validates: Requirement 1.3**
+- **Validates: Requirements 1.3**
 
 ### Property 4: The list result set equals the reference conjunctive predicate
 
@@ -1648,7 +1648,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: the transaction boundary plus `SELECT FOR UPDATE` and the `state_version` guard (§3.5.3, §3.5.4)
 - **Generator**: for totality, random single requests over random Leads; for concurrency, `N ∈ [2, 8]` requests fired from separate database connections against one Lead, with random target states including identical ones
 - **Invariant**: the post-request snapshot either fully reflects the transition or is byte-identical to the pre-request snapshot; under concurrency, `accepted_count <= 1` and `len(history_after) - len(history_before) <= 1`
-- **Validates: Requirement 4.7**
+- **Validates: Requirements 4.7**
 
 ### Property 11: Adapter events map to states exactly as tabulated, and illegal mappings change nothing
 
@@ -1666,7 +1666,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: resolution steps 0a and 0b of the validation pipeline (§3.5.2)
 - **Generator**: random non-member strings (including near-misses like `"released"`, `"New Lead"`, empty string) and random absent integer ids
 - **Invariant**: rejection occurs, the discriminating message is correct, and the history table is unchanged
-- **Validates: Requirement 4.10**
+- **Validates: Requirements 4.10**
 
 ### Property 13: No prospect email is ever sent after an unsubscribe, and no call after a do-not-call
 
@@ -1702,7 +1702,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: the `email_normalized` and `phone_digits` generated columns and the second confirmation token (§3.6.5)
 - **Generator**: a base contact plus random case permutations, random leading/trailing whitespace, and random punctuation/spacing insertions into phone numbers
 - **Invariant**: duplicate detected in every variant pair; submission without the second token yields zero adapter invocations
-- **Validates: Requirement 5.7**
+- **Validates: Requirements 5.7**
 
 ### Property 17: Bulk outreach submits exactly the cleared subset
 
@@ -1711,7 +1711,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `OutreachController` bulk path over per-Lead `ComplianceDecision`s (§3.6.6)
 - **Generator**: selections of random size 1–100 where each Lead independently receives a random subset of the blocking conditions
 - **Invariant**: `submitted_set == cleared_subset`; every blocked Lead appears in the report with a non-empty condition; each submitted Lead has its own distinct `outreach_request_id`
-- **Validates: Requirement 5.13**
+- **Validates: Requirements 5.13**
 
 ### Property 18: No email carrying a site preview link precedes that site's approval
 
@@ -1756,7 +1756,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `Release_Gate` plus the `one_authorization_per_deal` unique constraint and the `trg_delivery_guard` trigger (§3.7.3–§3.7.5)
 - **Generator**: a stateful machine over the full money path with rules `set_price`, `create_invoice`, `deliver_payment_event(random amount)`, `verify_payment`, `confirm_release`, `fail_delivery`, `retry_delivery`, `request_random_transition`, `deliver_random_event` — executed in Hypothesis-chosen orders including out-of-order and repeated rules
 - **Invariant**: after every rule, for every Deal with `delivery_sent` set, all four clauses hold
-- **Validates: Requirement 8.11**
+- **Validates: Requirements 8.11**
 
 ### Property 23: Nothing is delivered without an accepted Approve Release
 
@@ -1774,7 +1774,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `UNIQUE (deal_id)` on `release_authorizations`, with the row lock turning the collision into an orderly `already_authorized` result (§3.7.4)
 - **Generator**: random `N ∈ [2, 8]`, each confirmation on its own database connection with randomized start jitter, over Deals in the qualifying state
 - **Invariant**: `count(release_authorizations where deal_id = D) == 1`; `count(send_delivery_email invocations for D) == 1`; the three timestamp fields are identical before and after every losing confirmation
-- **Validates: Requirement 8.13**
+- **Validates: Requirements 8.13**
 
 ### Property 25: The invoice and verification gates admit exactly one valid combination each
 
@@ -1837,7 +1837,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: the cohort restriction of §2.4
 - **Generator**: random Leads with random legal transition paths, deliberately including Leads whose New_Lead entry falls outside the range while later entries fall inside — the exact case that breaks a non-cohort funnel
 - **Invariant**: `counts[i] >= counts[i+1]` for every consecutive pair; every drop-off count `>= 0`; every drop-off percentage in `[0, 1]`
-- **Validates: Requirement 10.2**
+- **Validates: Requirements 10.2**
 
 ### Property 32: Out-of-range records never influence an in-range metric
 
@@ -1864,7 +1864,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: the `trg_audit_immutable` trigger, the INSERT-only privilege grant, and the model-level guards (§3.12)
 - **Generator**: random committed entries; mutation attempts spanning ORM `save()`, `update()`, `delete()`, `bulk_update`, raw `UPDATE`, and raw `DELETE`; random field subsets to modify
 - **Invariant**: every attempt raises; a full row comparison before and after is identical
-- **Validates: Requirement 11.4**
+- **Validates: Requirements 11.4**
 
 ### Property 35: Audit queries are correctly ordered, conjunctively filtered, and fully paginated
 
@@ -1918,7 +1918,7 @@ Each property names the component that upholds it, the generator that exercises 
 - **Upheld by**: `StubPipelineAdapter`, which holds no network client (§3.14.2)
 - **Generator**: the five operations × random argument dictionaries including unicode, very long strings, and boundary numeric values
 - **Invariant**: an `adapter_invocations` row exists whose `arguments` JSONB equals the submitted arguments; `elapsed < 1s`; `status == success`; zero sockets opened and zero messages in the mail outbox
-- **Validates: Requirement 12.3**
+- **Validates: Requirements 12.3**
 
 ### Property 41: Field constraints reject every out-of-bound write
 
@@ -1941,7 +1941,7 @@ Each property names the component that upholds it, the generator that exercises 
 
 ---
 
-## 5. Error Handling
+## Error Handling
 
 ### 5.1 Taxonomy
 
@@ -1992,7 +1992,7 @@ Because the audit `INSERT` shares the action's transaction (§3.13.1), its failu
 
 ---
 
-## 6. Open Questions and Recommendations
+## Open Questions and Recommendations
 
 Two modeling questions in the requirements have not yet been ruled on by the user. Both are answered here with a recommendation and rationale; neither is silently designed in beyond what is stated.
 
@@ -2034,7 +2034,7 @@ Also needing a ruling in that follow-up: whether `Refunded` reverses the Require
 
 ---
 
-## 7. Testing Strategy
+## Testing Strategy
 
 ### 7.1 Stack
 
