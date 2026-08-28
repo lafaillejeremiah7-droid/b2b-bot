@@ -63,7 +63,9 @@ This section records the decisions that shaped the rest of the document. Four of
 | `website_condition` | `leads.website_condition` `SMALLINT CHECK (BETWEEN 1 AND 5)` (Requirements 13.1, 13.6) | Operator on the Deal_Room_View; future bot research step | Yes |
 | `urgency` | `leads.urgency` `SMALLINT CHECK (BETWEEN 1 AND 5)` (Requirements 13.1, 13.6) | Operator on the Deal_Room_View; future bot research step | Yes |
 
-`Pricing_Advisor.resolve_inputs(lead)` implements the Requirement 7.12 order for `page_count`: the `page_count` of the Lead's most recent Site_Project if one exists, otherwise `leads.estimated_page_count`, otherwise absent. `website_condition` and `urgency` read their columns directly, an unset column resolving to absent.
+`Pricing_Advisor.resolve_inputs(lead)` implements the Requirement 7.12 order for `page_count`: the `page_count` of the Lead's **most recent** Site_Project if one exists, otherwise `leads.estimated_page_count`, otherwise absent. `website_condition` and `urgency` read their columns directly, an unset column resolving to absent.
+
+"Most recent" here is not a loose word. Requirement 7.12 defers to Requirement 6.11's single definition — the Lead's Site_Project holding the greatest `site_projects.created_at`, ties broken by the greatest Site_Project id — and Requirement 6.11 names this `page_count` resolution as one of the two places the definition must be applied. The ordering key is `created_at` and never `generated_at`, because `generated_at` is unset while a Site_Project is still `Generating`, which is exactly the window in which a Suggested_Price is most likely to be requested. §3.8 gives the full reasoning; §3.3 applies the same ordering to the Requirement 6.2 list indicator.
 
 **Population while the bot does not exist.** All three are Operator-entered fields on the Deal_Room_View, grouped in a "Pricing inputs" panel that displays the resulting Suggested_Price and recomputes it from the persisted values on change (Requirement 3.11). Each is edited through the same validated field-edit path as the contact fields (Requirements 3.6/3.8), with the ranges of Requirement 3.12 enforced at the view boundary and again by the column `CHECK`s, so each edit is audited as a Lead field edit. When the bot arrives it writes the same three columns; no dashboard code changes.
 
@@ -312,7 +314,22 @@ class AuthService:
     def sign_out(self, request) -> None: ...   # Req 1.13, ≤2s
 ```
 
-**Lockout (Requirement 1.11).** A `login_attempts` table records `(identifier_hash, occurred_at, outcome)`. Before evaluating credentials, the service counts failures for that identifier in the trailing 15 minutes; at 5 or more it refuses without evaluating the password, displays the remaining refusal duration measured from the fifth failure, and writes a rejected-attempt audit entry. A successful sign-in resets the count by marking prior failures as superseded (Requirement 1.2), which keeps the table append-only and lets the count be a windowed query rather than a mutable counter.
+**Lockout (Requirement 1.11).** A `login_attempts` table records `(identifier_hash, occurred_at, outcome)` and is **append-only**: no row in it is ever updated or deleted. Before evaluating credentials, the service counts that identifier's **failures since its last success** — the rows with `outcome = 'failure'` whose `occurred_at` falls in the trailing 15 minutes *and* is later than that identifier's most recent successful attempt, or simply the failures in the trailing 15 minutes when the identifier has no successful attempt on record:
+
+```sql
+SELECT count(*) FROM login_attempts
+ WHERE identifier_hash = %(id_hash)s
+   AND outcome = 'failure'
+   AND occurred_at >= now() - interval '15 minutes'
+   AND occurred_at > coalesce((SELECT max(occurred_at) FROM login_attempts
+                                WHERE identifier_hash = %(id_hash)s
+                                  AND outcome = 'success'),
+                              '-infinity'::timestamptz);
+```
+
+At 5 or more it refuses without evaluating the password, displays the remaining refusal duration measured from the fifth such failure, and writes a rejected-attempt audit entry.
+
+**A successful sign-in resets the count by *appending a success row*, not by marking anything.** The appended row's `occurred_at` becomes the new lower bound of the window, so every earlier failure drops out of the count from that instant onward without any row being touched. Requirement 1.2's "reset that account's consecutive-failure count to zero" is satisfied by exactly this reading, and it is worth saying so explicitly: immediately after a success the failures-since-last-success count is zero by construction, because no failure can have an `occurred_at` later than the success row just appended. The count is therefore a derived windowed query over immutable rows — never a mutable counter, and never an `UPDATE` on a table this design declares append-only.
 
 The identifier is stored hashed so the attempts table is not an account-enumeration oracle. The failure message is a single constant string that never distinguishes unknown identifier from wrong password (Requirement 1.3).
 
@@ -380,9 +397,15 @@ ORDER BY <selected_column> <dir> NULLS LAST,   -- Req 2.4 nulls after values
 
 `NULLS LAST` is applied for both directions, since Requirement 2.4 places valueless records after valued ones irrespective of direction — which is *not* PostgreSQL's default for `DESC`, so the clause is explicit.
 
-**Most-recent-activity timestamp (Requirement 2.1)** is the greatest of the Lead's email `sent_at`/`opened_at`/`clicked_at`/`reply_at`, call timestamps, `pipeline_state_history.occurred_at`, and Operator action `occurred_at`. Computing this per row with correlated subqueries would be six subqueries per row. Instead it is a maintained denormalized column `leads.last_activity_at`, which Requirement 13.1 declares and requires to be written in the same transaction as any record write that advances it and read by the sort of Requirement 2.4. The advancing writes are a small set of well-known code paths: email row insert, adapter event applying an email timestamp, call insert, state transition, audited Lead edit. Denormalizing makes the value sortable and indexable, which the 1-second filter/sort budget (Requirement 2.7) requires.
+**Most-recent-activity timestamp (Requirement 2.1)** is the greatest of the Lead's email `sent_at`/`opened_at`/`clicked_at`/`reply_at`, call timestamps, `pipeline_state_history.occurred_at`, and **applied** Operator action `occurred_at` — where Requirements 2.1 and 13.14 both restrict that last source to Operator actions the dashboard actually applied and explicitly exclude the timestamps of rejected action attempts. Computing this per row with correlated subqueries would be six subqueries per row. Instead it is a maintained denormalized column `leads.last_activity_at`, which Requirement 13.1 declares and requires to be written in the same transaction as any record write that advances it and read by the sort of Requirement 2.4. The advancing writes are a small set of well-known code paths: email row insert, adapter event applying an email timestamp, call insert, state transition, audited Lead edit. Denormalizing makes the value sortable and indexable, which the 1-second filter/sort budget (Requirement 2.7) requires.
 
-Requirement 13.14 goes further and states the equality as an invariant of the stored data — for all Leads, `last_activity_at` equals the latest of the Requirement 2.1 source timestamps and is unset when the Lead has none — rather than as a property of one write path. That is the stronger claim, and it is what the nightly consistency job verifies: the job recomputes the value from the source tables for every Lead, logs any drift, and is the detection mechanism for a future writer that advances a source timestamp without advancing the column. Property 43 asserts the same invariant over arbitrary interleavings of the advancing writes.
+Requirement 13.14 goes further and states the equality as an invariant of the stored data — for all Leads, `last_activity_at` equals the latest of the Requirement 2.1 source timestamps — rather than as a property of one write path. Two clauses of that invariant shape the implementation.
+
+**The source set contains only applied Operator actions.** Requirements 2.1 and 13.14 exclude the timestamps of rejected action attempts from the source set. That is why the autonomous rejection transaction of §3.13.3 correctly does **not** advance the column: it commits a rejected-attempt Audit_Entry and nothing else, and a rejected-attempt entry is not a member of the source set. So the activity column and the audit table deliberately disagree about the latest thing that happened to a Lead whenever the most recent event was a refusal — the audit trail records the attempt, the activity timestamp does not, and both are correct. Any writer that advanced the column from an `audit_entries` row without filtering out rejected attempts would violate the invariant.
+
+**The column is never null.** Requirement 13.14 states that `last_activity_at` is set at Lead creation from the `occurred_at` of that Lead's genesis `pipeline_state_history` record (Requirement 13.13) and remains set thereafter, and Requirements 13.1 and 13.6 make it a required, not-null timestamp. Every Lead therefore carries at least one source timestamp from the instant it exists — its own `New_Lead` history row, written in the same transaction as the Lead — so the "no activity yet" case is *unreachable* rather than merely unusual. The `NULLS LAST` clause above still applies to the other sortable columns, but it can never engage for this one.
+
+The invariant is what the nightly consistency job verifies: the job recomputes the value from the source tables for every Lead, applying the same applied-actions-only filter, logs any drift, and is the detection mechanism for a future writer that advances a source timestamp without advancing the column. Property 43 asserts the same invariant over arbitrary interleavings of the advancing writes, including interleavings that contain rejected attempts.
 
 **Search (Requirement 2.3)** trims the term, requires length 1–100 after trimming, and matches case-insensitively as a substring against `company_name`, `contact_name`, `contact_email`, `contact_phone`. Substring (not prefix) matching means B-tree indexes do not apply; a PostgreSQL `pg_trgm` GIN index over the four columns keeps this within budget at 5,000 rows and well beyond.
 
@@ -398,6 +421,20 @@ WITH dup_email AS (
   WHERE phone_digits <> '' GROUP BY phone_digits HAVING count(*) > 1
 )
 ```
+
+**Site Ready for Review indicator (Requirements 6.2, 6.11).** The list query joins each Lead's **most recent** Site_Project and renders the indicator only when that row's `review_state` is `Ready_For_Review`. "Most recent" is Requirement 6.11's single definition — the greatest `site_projects.created_at`, ties broken by the greatest `site_projects.id` — and the join uses exactly that ordering, never `generated_at`:
+
+```sql
+LEFT JOIN LATERAL (
+  SELECT sp.review_state
+    FROM site_projects sp
+   WHERE sp.lead_id = leads.id
+   ORDER BY sp.created_at DESC, sp.id DESC     -- Req 6.11, NOT generated_at
+   LIMIT 1
+) latest_site ON true
+```
+
+§3.8 explains why the ordering key has to be `created_at`. The reason it is restated here is that this join and the `page_count` resolution of §3.9 are the two consumers Requirement 6.11 names by name, and the requirement exists to stop them drifting apart.
 
 **Pagination** is 50 per page with total match count, page number, and page count (Requirement 2.5). A requested page beyond the last clamps to the last page while retaining filters, search, and sort (Requirement 2.14). A zero-match result renders a count of 0, an explanatory message, and a clear-all control (Requirement 2.13). A retrieval failure renders an error with a retry control and the filter state preserved in the query string (Requirement 2.15) — filter state lives in the URL, not in server session state, which is what makes retry and clamping trivially state-preserving.
 
@@ -588,7 +625,7 @@ assert S.RELEASED not in EVENT_STATE_MAP.values()      # Req 8.10, 8.12
 assert S.PAYMENT_VERIFIED not in EVENT_STATE_MAP.values()  # Req 8.5 operator-only
 ```
 
-Mapped events are evaluated through the same pipeline as Operator requests, so an event whose mapped state is not a legal successor is rejected with the current state and reported event type recorded, and nothing else changes (Requirement 4.9). The two `assert` lines are the machine-checked form of the claim in §3.7.2 that no webhook can release a website or verify a payment.
+Mapped events are evaluated through the same pipeline as Operator requests, so an event whose mapped state is not a legal successor is rejected with the current state and reported event type recorded, and every field *the rejected transition would itself have written* is left unchanged (Requirement 4.9). That scoping is deliberate and is what Requirement 4.9 now states: the clause covers the transition's own fields and does **not** require discarding a fact the event records under a different criterion. The one case where this bites is the payment event, whose amount, `paid_date`, and `payment_received` are recorded unconditionally by Requirement 8.3 and therefore survive a rejected `Paid_Pending_Verification` request; §3.14.3 gives the transaction shape that makes the transition rejectable without taking the payment down with it. The two `assert` lines are the machine-checked form of the claim in §3.7.2 that no webhook can release a website or verify a payment.
 
 
 ### 3.6 Compliance_Guard and Outreach_Controller (Requirement 5)
@@ -611,6 +648,13 @@ class ClearedOutreach:
             raise TypeError("ClearedOutreach cannot carry blocking conditions")
         ...
 
+    @property
+    def clearance_timestamp(self) -> datetime:      # Req 5.18
+        """The instant the guard evaluated THIS action and found no block.
+        Carried unchanged onto the outreach_requests row and from there onto
+        the emails or calls row (Req 5.18)."""
+        return self.decision.evaluated_at
+
 class OutreachController:
     # The ONLY method that reaches adapter.send_prospect_email / log_outbound_call.
     # It cannot be called without a ClearedOutreach, so it cannot be called
@@ -618,13 +662,20 @@ class OutreachController:
     def submit(self, cleared: ClearedOutreach, message: OutreachMessage) -> OutreachResult: ...
 ```
 
+**The token *is* the clearance record (Requirement 5.18).** `ClearedOutreach` does not merely prove that a clearance happened; it carries *when* it happened. Requirement 5.18 states that the Compliance_Guard records the instant of a clean evaluation as the **Clearance_Timestamp** on that action's outreach request record, that the Outreach_Controller submits no request carrying no Clearance_Timestamp, and that the same value is copied unchanged onto the email row or call row recorded for the action. The `ComplianceDecision.evaluated_at` field (§3.6.2) *is* that instant, `ClearedOutreach` exposes it as `clearance_timestamp`, and because a `ClearedOutreach` is the only thing `submit()` accepts, "no submission without a Clearance_Timestamp" is a consequence of the type rather than a check anyone has to remember to write.
+
 Three reinforcing layers make this structural rather than aspirational:
 
-1. **Type-level**: `submit()` requires a `ClearedOutreach`, which only `ComplianceGuard.evaluate()` can mint, and which refuses construction when blocks are present.
+1. **Type-level**: `submit()` requires a `ClearedOutreach`, which only `ComplianceGuard.evaluate()` can mint, which refuses construction when blocks are present, and which carries the Clearance_Timestamp of the evaluation that minted it.
 2. **Import-linter contract**: only `outreach_controller` may import the adapter's `send_prospect_email` and `log_outbound_call` symbols. A new module attempting a direct send fails CI.
-3. **Database triggers** (§4.6): `emails` and `calls` carry `BEFORE INSERT` triggers that raise if the Lead is opted out at that timestamp. Even a raw SQL insert from a management command cannot violate Requirements 5.11 and 5.16.
+3. **Database triggers** (§4.6): `emails` and `calls` carry `BEFORE INSERT` triggers that raise when the row's `clearance_timestamp` is at or after the Lead's `unsubscribed_at` / `do_not_call_at`. Even a raw SQL insert from a management command cannot violate Requirements 5.19 and 5.20.
 
-Layer 3 is what makes 5.11 and 5.16 true *invariants of the database* rather than properties of the application. They are stated in the requirements as `FOR ALL … the count SHALL be zero`, which is an invariant claim, and invariant claims belong in the store.
+**Which invariant each layer holds is now stated precisely, because it used to be conflated.** The requirements draw a line the earlier design did not:
+
+- Requirements 5.11 and 5.16 are **submission** invariants: for all opted-out Leads, the count of requests *submitted to the Pipeline_Adapter* carrying a Clearance_Timestamp at or after the opt-out is zero. These are upheld by layers 1 and 2 — the guard evaluates, mints the token with its `evaluated_at`, and the only path to the adapter demands that token. Nothing about submission can be enforced by a database constraint, because submission is a network call.
+- Requirements 5.19 and 5.20 are **stored** invariants: for all recorded email rows (and for all call rows that carry a Clearance_Timestamp), the row's `clearance_timestamp` is earlier than the Lead's `unsubscribed_at` / `do_not_call_at`. These are upheld by layer 3, because they are claims about rows and claims about rows belong in the store.
+
+The distinction matters, and getting it wrong was a real defect. A trigger comparing `sent_at` against `unsubscribed_at` is not enforcing either invariant — it is enforcing a third, stricter claim that the requirements do not make and that the three-phase protocol (§3.6.4) cannot satisfy, because `sent_at` is written in Phase 3 *after* the adapter has already sent the message in Phase 2. An unsubscribe landing in that window would make the Phase 3 insert raise, roll the recording transaction back, and delete the only record of a physically-sent email — turning the compliance log into a document that omits exactly the sends a compliance auditor most needs to see. Requirements 5.21 and 5.22 rule the opposite way: on adapter success the row is recorded regardless, marked with the Late_Opt_Out_Marker, with Operators notified. Comparing the *clearance* timestamp rather than the *send* timestamp is what makes the trigger and that ruling agree, because the clearance instant is fixed before submission and cannot be invalidated by anything that happens afterward.
 
 #### 3.6.2 The decision object
 
@@ -643,6 +694,10 @@ class ComplianceGuard:
     def clear(self, decision: ComplianceDecision, lead: Lead, channel: Channel,
               outreach_request_id: UUID) -> ClearedOutreach: ...
 ```
+
+**`evaluated_at` is the Clearance_Timestamp (Requirement 5.18).** The field was already on the decision object; what the requirements now settle is its role. When `evaluate()` finds no blocking condition among Requirements 5.3–5.7 and 5.15, `evaluated_at` is the instant of that evaluation, and Requirement 5.18 makes that instant the action's **Clearance_Timestamp**: it is written to `outreach_requests.clearance_timestamp` when `clear()` reserves the request in Phase 1 (§3.6.4), and copied unchanged to `emails.clearance_timestamp` or `calls.clearance_timestamp` in Phase 3. It is never recomputed — a retry of the same confirmed action reuses the same reservation row and therefore the same Clearance_Timestamp, exactly as it reuses the same `outreach_request_id`. Requirements 13.3, 13.4, and 13.5 declare the column on all three tables and make it required everywhere except on a call row an Operator logged directly with no reservation behind it (Requirement 3.5).
+
+So the value that Requirements 5.11, 5.16, 5.19, and 5.20 all quantify over originates in exactly one place, is written once, and is never derived a second time from a clock. That is what makes the submission invariant and the stored invariant statements *about the same number*, rather than two nearby numbers that can disagree.
 
 **Field naming.** This design uses the declared column names `unsubscribed_at` and `do_not_call_at` throughout; where the requirements say a Lead has "unsubscribed set" (Requirements 5.3, 5.11) or refer to "the Lead's unsubscribed field" (Requirement 5.8), that denotes `unsubscribed_at` being non-null, which is the bridge Requirement 13.1 states — the unsubscribed-set condition holds exactly when `unsubscribed_at` is set, and likewise for `do_not_call_at` (Requirements 5.4, 5.16).
 
@@ -701,8 +756,8 @@ sequenceDiagram
 
     Note over OC,DB: Phase 1 — reserve (transaction A)
     OC->>CG: re-evaluate then clear() → ClearedOutreach
-    OC->>DB: INSERT outreach_requests<br/>(id=UUID, status=pending)  ← UNIQUE(id)
-    DB-->>OC: reserved
+    OC->>DB: INSERT outreach_requests<br/>(id=UUID, status=pending,<br/>clearance_timestamp=decision.evaluated_at)<br/>← UNIQUE(id), clearance REQUIRED (Req 5.18, 13.5)
+    DB-->>OC: reserved — the clearance is now a durable fact
 
     Note over OC,AD: Phase 2 — invoke OUTSIDE any transaction, 30s timeout
     OC->>AD: send_prospect_email(..., idempotency_key=outreach_request_id)
@@ -710,14 +765,32 @@ sequenceDiagram
 
     Note over OC,DB: Phase 3 — record (transaction B)
     alt success
-        OC->>DB: INSERT emails(outreach_request_id) ← UNIQUE<br/>+ audit entry<br/>+ state request New_Lead→Contacted (Req 5.1)<br/>+ outreach_requests.status = succeeded
+        OC->>DB: INSERT emails(outreach_request_id,<br/>clearance_timestamp COPIED from the reservation,<br/>late_opt_out_marker) ← UNIQUE<br/>+ audit entry<br/>+ state request New_Lead→Contacted (Req 5.1)<br/>+ outreach_requests.status = succeeded
+        Note over OC,DB: If the Lead opted out AFTER the clearance and<br/>BEFORE this write: row is still recorded, with<br/>late_opt_out_marker = true + notify (Req 5.21, 5.22).<br/>The trigger compares clearance_timestamp, so it<br/>CANNOT reject a row the adapter already sent.
     else failure
         OC->>DB: outreach_requests.status = failed(reason)<br/>no email row (Req 12.4)
-        OC-->>OP: failure reason + retry control<br/>(retry REUSES the same id, Req 5.9)
+        OC-->>OP: failure reason + retry control<br/>(retry REUSES the same id and the same<br/>clearance_timestamp, Req 5.9, 5.18)
     end
 ```
 
 Why three phases rather than one transaction: a 30-second network call inside a transaction holds locks for 30 seconds and risks connection-pool exhaustion. Splitting it means the external call is never inside a transaction, while the *recording* of its effect still is.
+
+**The Clearance_Timestamp is recorded in Phase 1, not Phase 3 (Requirement 5.18).** This is the ordering that makes the compliance guarantee survive the phase split. Phase 1's insert carries `clearance_timestamp = decision.evaluated_at`, so the moment the reservation commits, the fact "this action was cleared at instant T" is durable and immutable. Phase 3 does not re-derive it and does not consult the clock; it copies the reserved value onto the `emails` or `calls` row. Requirement 13.5 makes the column required on `outreach_requests`, and Requirements 13.3 and 13.4 make it required on `emails` and on any call row that carries an `outreach_request_id`, so there is no path that records an outreach row without a clearance behind it.
+
+**A late opt-out marks the row; it does not lose it (Requirements 5.21, 5.22).** If the Lead's `unsubscribed_at` (or `do_not_call_at`) is recorded after the Phase 1 clearance but before the Phase 3 write, Phase 3 still records the row, because the adapter already reported success and the message has already left. It additionally sets `late_opt_out_marker = true` on that row and generates a notification so Operators learn of the late opt-out within 60 seconds of the row being recorded. Phase 3 detects the case by comparing the reserved `clearance_timestamp` against the Lead's current opt-out timestamp under the same row read it already takes:
+
+```python
+# Phase 3, inside transaction B (Req 5.21, 5.22)
+late = (opt_out_at is not None and opt_out_at > reservation.clearance_timestamp)
+row = Email.objects.create(
+    lead=lead, outreach_request_id=reservation.id,
+    clearance_timestamp=reservation.clearance_timestamp,   # copied, never recomputed
+    late_opt_out_marker=late, sent_at=timezone.now(), ...)
+if late:
+    NotificationService.generate(event_type=COMPLIANCE_EVENT, lead=lead, ...)
+```
+
+The trigger of §4.6 cannot object to this insert, because it compares `NEW.clearance_timestamp` — which is strictly earlier than `opt_out_at` in precisely this case — rather than `sent_at`, which is not. The marker is what preserves the distinction the requirements care about: a row with the marker set was sent *before* the opt-out was processed and is compliant; a row without it was sent while the Lead was cleared, full stop. Neither is a row that quietly disappeared.
 
 The uniqueness rules that make this safe:
 
@@ -774,8 +847,16 @@ sequenceDiagram
     Note over EVT,DB: 2. Payment arrives — from a webhook, NOT from an operator
     AD->>EVT: payment_received(event_id, lead_id, deal_id, amount)
     EVT->>DB: ON CONFLICT DO NOTHING on processed_events (Req 12.5)
-    EVT->>DB: INSERT payments; deals.payment_received = true
-    EVT->>PSM: request Invoiced → Paid_Pending_Verification (Req 8.3)
+    EVT->>DB: INSERT payments; deals.paid_date; deals.payment_received = true<br/>UNCONDITIONAL — any state, invoice or not (Req 8.3)
+    EVT->>PSM: request → Paid_Pending_Verification, in a NESTED SAVEPOINT<br/>(separate outcome, Req 8.3)
+    alt transition legal and an invoice exists
+        PSM-->>EVT: applied
+    else illegal transition, or no invoice record
+        PSM-->>EVT: rejected — savepoint rolls back, payment SURVIVES
+        EVT->>DB: deals.payment_anomaly_flag = true<br/>+ payment_anomaly_reason (Req 8.21, 13.2)
+        EVT->>DB: notify Operators of the anomaly (Req 8.21)
+        Note over EVT,DB: State unchanged. Payment retained.<br/>Exactly one payment record (Req 8.23).<br/>Cleared only by an audited Agent/Admin<br/>action (Req 8.22, 11.3).
+    end
     Note over EVT: This path has NO reference to RG.<br/>It cannot release. (Req 8.12)
 
     Note over OP,DB: 3. Human verification — the first gate
@@ -931,7 +1012,13 @@ All three timestamps come from a single logical clock source (`timezone.now()`, 
 
 **Invoice creation (Requirements 8.1, 8.2).** Preconditions: state `Won`, `agreed_price` set and in `[550, 1000]`, and no existing invoice. `invoices` carries `UNIQUE (deal_id)` and `UNIQUE (invoice_number)`, so a duplicate create raises `IntegrityError` and is reported as "invoice already exists" with the existing identifier, amount, and `issued_at` unchanged. The `amount` is copied from `agreed_price` at issue time, and from then on `agreed_price` is immutable (Requirement 7.11) — enforced by a service-layer check plus a trigger rejecting `agreed_price` updates on a Deal that has an invoice, so the displayed invoice amount can never disagree with the agreed price.
 
-**Payment recording (Requirement 8.3).** Driven by the `payment_received` event. Amount is validated as a whole dollar value in `[1, 1000]` — note the deliberately wider lower bound than `agreed_price`'s 550, because a partial payment is a real event that must be recordable in order to be shown as a shortfall.
+**Payment recording (Requirements 8.3, 8.21, 8.22, 8.23).** Driven by the `payment_received` event. Amount is validated as a whole dollar value in `[1, 1000]` — note the deliberately wider lower bound than `agreed_price`'s 550, because a partial payment is a real event that must be recordable in order to be shown as a shortfall.
+
+**Recording the payment is unconditional.** Requirement 8.3 records the amount, the `paid_date`, and `payment_received` for *any* payment event whose `deal_id` resolves to an existing Deal — irrespective of the Lead's current Pipeline_State and irrespective of whether an invoice record exists — and requests the `Paid_Pending_Verification` state as a separate outcome that does not condition the recording. The earlier framing of this step as applying "for a Deal holding an invoice record" was the wrong precondition: money that has arrived is a fact about the world, and a dashboard that refuses to store it because the pipeline is in an unexpected shape has lost the one datum an Operator most needs. Requirement 8.23 states the resulting invariant directly — an accepted payment event always leaves exactly one payment record — and Property 46 asserts it across every Pipeline_State, with and without an invoice, and under repeat delivery.
+
+**The anomaly path (Requirement 8.21).** When the payment cannot be accompanied by the state change — either the Lead's current state forms no Legal_Transition to `Paid_Pending_Verification`, or the Deal has no invoice record — the payment is retained, the Pipeline_State is left unchanged, `payment_anomaly_flag` is set with `payment_anomaly_reason` naming which of the two conditions applied, and Operators are notified within 60 seconds of the event being accepted. §3.14.3 gives the transaction shape: the transition request runs in a nested savepoint whose rejection rolls back the transition alone, while the payment insert, the flag, the reason, and the `processed_events` claim all commit in the enclosing event transaction.
+
+**Surfacing and clearing the anomaly (Requirements 8.22, 11.3).** While the flag is set, the Deal_Room_View displays a payment anomaly indicator together with the recorded reason and the Lead_List_View displays a payment anomaly badge on that Deal's Lead row. The flag is cleared **only** by an explicit clear-payment-anomaly action confirmed by an Operator holding the Agent or Admin role, which writes one Audit_Entry under the `payment anomaly clearing` action type of Requirement 11.3 with the recorded reason as `before_value`. No Pipeline_Adapter event and no Pipeline_State change clears it — the same structural argument as §3.7.2, one writer and no call edge from the event intake — so a later, legal transition does not silently erase the record that a human still needs to look at this Deal.
 
 **Verification (Requirements 8.4–8.6, 8.14).** The view displays the recorded amount, the invoice amount, and the difference. Verification requires state `Paid_Pending_Verification` and an unset flag; otherwise it is rejected with a message distinguishing wrong-state from already-recorded (Requirement 8.14). When the amounts differ, the absolute difference is displayed labelled as shortfall or overpayment and a **second** confirmation token is required; absent that token the flag stays unset (Requirement 8.6). Setting the flag writes `payment_verified_at` at millisecond precision plus `verified_by_operator_id` — both declared as `deals` columns by Requirement 13.2 — then requests the state transition, all in one transaction as Requirement 8.18 requires.
 
@@ -955,15 +1042,35 @@ class SiteReviewGate:
 **The preview-link gate (Requirements 6.6, 6.7).** Requirement 6.7 is an invariant: every email row containing a preview URL must reference a Site_Project that was `Approved` at that email's `sent_at`. Two mechanisms:
 
 1. `Compliance_Guard` calls `assert_preview_link_permitted` as part of `evaluate()`, so a blocked preview link surfaces as an ordinary block in the same decision object every send path already respects. Detection scans the composed body for any `preview_url` belonging to any Site_Project of that Lead, and for the configured preview-host domain pattern, so a hand-typed or shortened-looking variant of the URL is still caught. On block, the composed message is retained and the current `review_state` is displayed alongside the required `Approved`.
-2. `emails` carries a nullable `site_project_id` set whenever the body contains that Site_Project's URL, plus a `BEFORE INSERT` trigger asserting that the referenced Site_Project's `approved_at` is non-null and `≤ NEW.sent_at`. This makes Requirement 6.7 a database invariant, closing the window where a site is approved, then rejected, then an email composed earlier is submitted.
+2. `emails` carries a nullable `site_project_id` set whenever the body contains that Site_Project's URL, plus a `BEFORE INSERT` trigger asserting that the referenced Site_Project's `approved_at` is non-null and no later than the row's `clearance_timestamp`. This makes Requirement 6.7 a database invariant, closing the window where an email composed earlier is submitted against a site that was not approved when the action was cleared. The choice of `clearance_timestamp` over `sent_at` as the comparison operand is explained at the end of this section.
 
-Because approve/reject are one-way from `Ready_For_Review` and a regeneration produces a *new* generation cycle, a rejected site returns to `Generating` only via the adapter's regeneration path (Requirement 6.5 submits the regeneration request; Requirement 6.1 explicitly covers the regeneration completion, setting `Ready_For_Review` again). The design models this as a new `site_projects` row per generation cycle, with `leads` referring to the latest by `generated_at`, so the review history of every generation is preserved rather than overwritten. That also makes the Requirement 6.7 trigger correct: an old rejected generation keeps its own row and can never be retroactively approved.
+Because approve/reject are one-way from `Ready_For_Review` and a regeneration produces a *new* generation cycle, a rejected site returns to `Generating` only via the adapter's regeneration path (Requirement 6.5 submits the regeneration request; Requirement 6.1 explicitly covers the regeneration completion, setting `Ready_For_Review` again). The design models this as a new `site_projects` row per generation cycle, with a Lead's **most recent** Site_Project resolved by Requirement 6.11's single definition — the greatest `site_projects.created_at`, ties broken by the greatest Site_Project id — so the review history of every generation is preserved rather than overwritten. That also makes the Requirement 6.7 trigger correct: an old rejected generation keeps its own row and can never be retroactively approved.
+
+**Why the ordering key is `created_at` and not `generated_at` (Requirement 6.11).** `generated_at` is unset until generation *finishes*: Requirement 6.1 records it at reported completion, and Requirement 13.5 declares it as unset until then. So a Site_Project whose `review_state` is `Generating` has no `generated_at` at all — and that is precisely the window in which both consumers of "most recent Site_Project" are consulted. The Requirement 6.2 indicator is evaluated on every Lead_List_View render, including while a regeneration is in flight. The Requirement 7.12 `page_count` resolution is read whenever a Suggested_Price is displayed, which is exactly when an Operator is about to quote. Ordering by `generated_at` would therefore sort the row that matters by a null: with `NULLS LAST` the in-flight generation is ranked behind the previous, already-rejected cycle, so the indicator would report the old row's state and the price would resolve against the old row's `page_count`; without an explicit null placement the ordering is simply not total. Requirement 13.5 makes `site_projects.created_at` required, set when the record is created under Requirement 6.8, and never changed thereafter, which gives the ordering a key that exists for every row from the instant the row exists. The id tiebreak makes the ordering total even for two rows created in the same instant. §3.3 and §3.9 apply this same ordering, and Requirement 6.11 names both of them so the three cannot diverge.
+
+**Residual issue in Requirement 6.7, assessed and fixed rather than deferred.** Requirement 6.7 states the invariant in terms of the referenced Site_Project's `review_state` **at that email's `sent_at`**, while the trigger tests `approved_at IS NOT NULL AND approved_at ≤ sent_at`. Two objections are worth separating, because they have different answers.
+
+*The first objection does not hold.* It supposes a Site_Project that is approved, later rejected, and retains its `approved_at` — so the trigger passes for a row whose `review_state` at `sent_at` was `Rejected`. That sequence is unreachable in this model. Requirements 6.4 and 6.5 permit approve and reject **only** from `Ready_For_Review`, and Requirement 6.10 rejects both actions from any other value; there is no rule anywhere that moves a Site_Project out of `Approved`. `Approved` is therefore an absorbing value on a given `site_projects` row, and a regeneration produces a *new* row rather than reusing the approved one. So `approved_at` being set at time T implies `review_state = Approved` for all times at or after T on that row, which makes `approved_at ≤ sent_at` equivalent to Requirement 6.7's condition rather than merely necessary for it. The paragraph above already relied on this; it is now stated as the reason the trigger is faithful.
+
+*The second objection does hold, and is fixed here.* The trigger has the same shape as the bug the clearance model removed from §4.6: it is a `BEFORE INSERT` on `emails` whose predicate references `sent_at`, a value assigned in Phase 3 *after* the adapter has already sent the message. Any predicate over `sent_at` is therefore a predicate that could, in principle, newly fail after the send, and its failure would roll back Phase 3 and destroy the record of a delivered email. The fix is the same one Requirements 5.19 and 5.20 forced: **compare against `NEW.clearance_timestamp` instead.**
+
+```sql
+-- Req 6.7, via the clearance instant rather than the send instant
+IF NEW.site_project_id IS NOT NULL THEN
+    SELECT approved_at INTO appr FROM site_projects WHERE id = NEW.site_project_id;
+    IF appr IS NULL OR appr > NEW.clearance_timestamp THEN
+        RAISE EXCEPTION 'preview link requires an approved site at clearance (Req 6.7)';
+    END IF;
+END IF;
+```
+
+This is strictly stronger than the original, not weaker, and it still enforces Requirement 6.7. `clearance_timestamp ≤ sent_at` always, since the clearance is recorded in Phase 1 and `sent_at` in Phase 3, so `approved_at ≤ clearance_timestamp` implies `approved_at ≤ sent_at`; combined with `Approved` being absorbing, the site's `review_state` at `sent_at` is `Approved`. And it can never newly fail between the adapter returning and the row being written, because both of its operands — the site's `approved_at` and the reservation's `clearance_timestamp` — are fixed before submission. Nor can it reject a legitimate send: mechanism 1 above evaluates the preview-link gate inside `evaluate()`, so a cleared action always has `approved_at < clearance_timestamp`. The only insert this predicate can now refuse is one that was never cleared at all, which is a defect to surface loudly rather than a sent email to erase.
 
 **Review surface (Requirement 6.3).** While `Ready_For_Review`, the Deal_Room_View shows `preview_url`, `page_count`, `generated_at`, and the generated text content of up to 20 pages, rendered within 3 seconds. Page text is stored in a `site_pages` child table at generation time rather than fetched from the preview host on each view, so the render is a local query and does not depend on the preview host's availability.
 
 **Rejection reason (Requirements 6.5, 6.9)** is 10–1000 characters. Out-of-range input rejects the action, retains `Ready_For_Review` and the Operator's typed text, and displays the accepted range.
 
-**Indicator (Requirement 6.2).** The list view shows a "Site Ready for Review" indicator for `Ready_For_Review` only, and omits it for `Generating`, `Approved`, and `Rejected`. Derived from the latest Site_Project's `review_state`, joined in the list query.
+**Indicator (Requirements 6.2, 6.11).** The list view shows a "Site Ready for Review" indicator for `Ready_For_Review` only, and omits it for `Generating`, `Approved`, and `Rejected`. It is derived from the `review_state` of the Lead's most recent Site_Project under the Requirement 6.11 ordering — greatest `created_at`, ties broken by greatest id — joined in the list query exactly as shown in §3.3.
 
 ### 3.9 Pricing_Advisor (Requirement 7)
 
@@ -988,7 +1095,7 @@ class SuggestedPrice:
     missing: tuple[str, ...]             # names of absent attributes
 ```
 
-`resolve_inputs()` follows §2.1. If any of the three is absent, the advisor returns `SuggestedPrice(PRICE_ANCHOR, is_fallback=True, missing=(...))` (Requirement 7.10) without evaluating the formula.
+`resolve_inputs()` follows §2.1, and its `page_count` branch resolves the Lead's most recent Site_Project by Requirement 6.11's ordering — greatest `site_projects.created_at`, ties broken by greatest id — which Requirement 7.12 names explicitly so that this resolution and the Requirement 6.2 indicator join in §3.3 cannot drift apart. Because the key is `created_at` rather than `generated_at`, a Lead whose newest Site_Project is still `Generating` and therefore has a null `generated_at` still resolves to that row, and its stored `page_count` is used if present or falls through to `leads.estimated_page_count` if not. If any of the three inputs is absent, the advisor returns `SuggestedPrice(PRICE_ANCHOR, is_fallback=True, missing=(...))` (Requirement 7.10) without evaluating the formula.
 
 Bounds (Requirement 7.7): the floor is 550 since every additive term is non-negative, and the cap is 1000 by the `min`. Over the stated input domains the result is always an integer in `[550, 1000]`, which Property 20 tests exhaustively-by-sampling.
 
@@ -1071,6 +1178,10 @@ Every rate is constructed with a numerator that is a filtered subset of its own 
 
 **Cohort funnel** (Requirement 10.2, per §2.4): for the ordered stages New_Lead → Contacted → Replied → Scheduled → Quoted → Won → Released, counts are restricted to the cohort of Leads whose `New_Lead` history entry falls in range, making stage counts monotonically non-increasing and drop-off percentages well-defined.
 
+**The unsubscribe rate now has a writer (Requirements 10.3, 5.8, 5.23, 12.2).** Requirement 10.3's unsubscribe-rate numerator counts email rows with `unsubscribed` set, and until the attribution rule was stated nothing in the system ever set that column — the metric was structurally pinned at zero. Requirement 12.2 now accepts an optional email identifier on an `unsubscribed` event, and Requirement 5.8 makes the attribution explicit: set `emails.unsubscribed` on the row the event names when it carries an identifier, otherwise on that Lead's email row with the greatest `sent_at`, and per Requirement 5.23 on no row at all when the Lead has no email rows. §3.14.3's event table implements exactly that, which gives the numerator a writer for the first time.
+
+**Boundary caveat, recorded rather than papered over.** The attribution rule can place the marked row outside the selected date range while the unsubscribe event itself falls inside it. A Lead emailed in March who unsubscribes in April has the `unsubscribed` flag set on a March row, so an April-only range counts that unsubscribe in neither its numerator nor its denominator, while a March-only range counts it in both. This is a direct consequence of Requirement 10.3 defining the denominator as email rows whose `sent_at` falls in the range and the numerator as a subset of that same population: the rate is "of the emails sent in this window, how many eventually drew an unsubscribe", not "how many unsubscribes arrived in this window". That reading keeps the rate inside `[0, 1]` by subset cardinality (§3.11.2) and keeps it comparable across ranges, which the alternative — an in-range event count over an in-range send count — would not, since the two can be drawn from disjoint populations and produce a rate above 1. The Analytics_View therefore labels the figure as a rate over emails sent in the range, and no clamping or cross-range correction is applied.
+
 Other metrics: email open/click/reply/unsubscribe rates over emails sent in range (10.3); call connect rate (10.4); close rate and mean `agreed_price` over Deals in the post-Won states (10.5); per-Variant-dimension send count, reply rate, meeting rate, and close rate (10.6) with an insufficient-sample indicator plus the send count below 30 sends (10.7); revenue, invoice counts, and median days-to-payment with even-size median as the mean of the two central values and no-paid-invoices rendered not-applicable (10.12).
 
 Date handling (Requirement 10.13): default trailing 30 days; boundaries interpreted in `REPORTING_TIMEZONE` with the start inclusive from 00:00:00 and the end inclusive through 23:59:59, converted to UTC instants for querying since storage is UTC (Requirement 13.11); ranges over 24 months rejected with the maximum span displayed.
@@ -1097,7 +1208,7 @@ class AuditLogger:
 
 `audit_entries` holds `actor_id`, `action_type`, `target_type`, `target_id`, `before_value JSONB`, `after_value JSONB`, `occurred_at TIMESTAMPTZ(3)`, and a monotonically increasing `id` that provides the append-sequence tiebreak Requirement 11.5 needs for entries sharing an `occurred_at`.
 
-`before_value` is `NULL` for a creation and `after_value` is `NULL` for a rejected attempt, both rendered as "not applicable" (Requirement 11.2). The ten `action_type` values of Requirement 11.3 are a closed enum with a database `CHECK`.
+`before_value` is `NULL` for a creation and `after_value` is `NULL` for a rejected attempt, both rendered as "not applicable" (Requirement 11.2). The eleven `action_type` values of Requirement 11.3 are a closed enum with a database `CHECK`: outreach send, Pipeline_State change, `agreed_price` change, site approval, site rejection, invoice creation, payment verification, **payment anomaly clearing**, release authorization, Lead field edit, and rejected action attempt. The payment-anomaly-clearing type is the audited half of Requirement 8.22 — clearing the Payment_Anomaly_Flag is an Agent/Admin-only action that records the anomaly reason as its `before_value` (§3.7.6), so the fact that a human looked at an anomalous payment and dismissed it is itself in the trail rather than inferable only from the flag going quiet.
 
 **Immutability (Requirement 11.4).** Three layers, because "append-only" claimed only in application code is not append-only:
 
@@ -1211,7 +1322,9 @@ class PipelineAdapter(ABC):
                           idempotency_key: UUID) -> AdapterResult: ...
 ```
 
-Every operation takes an `idempotency_key` (the `outreach_request_id` where one applies). The stub ignores it; the future live implementation forwards it to the provider's idempotency mechanism — Stripe's `Idempotency-Key` header, Gmail/SMTP's message-id, Twilio's request-level dedupe. Putting it in the interface *now* is what makes retry safe *later* without changing any caller.
+**The `idempotency_key` on all five signatures is required, not a design preference.** Requirement 12.1 states that every invocation of each of the five outbound operations carries an **Idempotency_Key** generated once per Operator-confirmed action and stable across every retry of that same confirmed action, and it identifies the `outreach_request_id` of Requirement 5.9 as the Idempotency_Key for `send_prospect_email` and `log_outbound_call`. Requirement 12.4 completes the contract on the failure side: the retry control resubmits the same operation *with the same Idempotency_Key*. So the parameter appears on all five signatures because the requirements put it there, and the two operations that already had a stable per-action identifier simply reuse it rather than minting a second one; `generate_site_preview`, `send_delivery_email`, and `create_invoice` each generate their key once at the Operator confirmation that triggers them and carry it through every retry of that confirmation. Requirement 13.5 stores the key alongside the clearance on the `outreach_requests` row for the two outreach operations.
+
+The stub ignores the key; the future live implementation forwards it to the provider's idempotency mechanism — Stripe's `Idempotency-Key` header, Gmail/SMTP's message-id, Twilio's request-level dedupe. Having it in the interface from the start is what makes a retry genuinely safe once a real provider is behind the seam, without changing any caller.
 
 **Never raising is part of the contract.** A facade wraps every implementation and converts exceptions, connection errors, and timeouts into `AdapterResult(status="failure")`. Callers therefore have exactly two branches, which is what Requirement 12.1's "exactly one result of success or failure" demands.
 
@@ -1237,7 +1350,7 @@ class TimeoutEnforcingAdapter(PipelineAdapter):
 
 A timeout returns failure and records no email, call, invoice, or Release_Authorization row for that invocation (Requirement 12.8) — which is automatic under the three-phase protocol, since recording happens only in Phase 3 on success.
 
-**Failure handling (Requirement 12.4).** State retained, all records unchanged, the returned reason displayed, and a retry control that resubmits the same operation with the same `outreach_request_id`.
+**Failure handling (Requirement 12.4).** State retained, all records unchanged, the returned reason displayed, and a retry control that resubmits the same operation with the same Idempotency_Key — which for the two outreach operations is the same `outreach_request_id`, and therefore also the same reserved Clearance_Timestamp (§3.6.4).
 
 #### 3.14.2 Stub mode (Requirement 12.3)
 
@@ -1286,9 +1399,66 @@ Requirement 12.5 requires retaining identifiers for at least 90 days. The purge 
 | `email_clicked` | set `emails.clicked_at` | — |
 | `prospect_replied` | set `emails.reply_at`; notify (Req 9.1) | `Replied` |
 | `email_bounced` | insert `email_bounces` with address+reason; set `manual_review_flag` (Req 5.6); notify (9.4) | — |
-| `unsubscribed` | set `leads.unsubscribed_at`; block future email (Req 5.8); notify (9.4) | — |
-| `payment_received` | insert `payments`; set `deals.payment_received`; notify (9.2) | `Paid_Pending_Verification` |
+| `unsubscribed` | set `leads.unsubscribed_at`; **set `emails.unsubscribed` on the row named by the event's optional email identifier, else on that Lead's greatest-`sent_at` row, else on no row at all when the Lead has none** (Req 5.8, 5.23, 12.2); block future email; notify (9.4) | — |
+| `payment_received` | **unconditionally** insert `payments` and set `deals.paid_date` + `deals.payment_received`, irrespective of Pipeline_State and irrespective of whether an invoice exists (Req 8.3); notify (9.2); set `payment_anomaly_flag` + reason when the state request is rejected or no invoice exists (Req 8.21) | `Paid_Pending_Verification`, requested as a **separate outcome** — its rejection does **not** roll back the payment (Req 8.3, 8.21, 4.9) |
 | `site_generation_finished` | set `review_state = Ready_For_Review`, `preview_url`, `page_count`, `generated_at`; notify (Req 6.1, 9.3) | — |
+
+**The payment event forces a two-level transaction shape.** Every other row of that table is satisfiable inside one flat transaction, because every effect in the row either all applies or all does not. The `payment_received` row is not, and the requirements now make the reason explicit. Requirement 8.3 records the payment amount, `paid_date`, and `payment_received` **unconditionally** for any payment event whose `deal_id` resolves, irrespective of Pipeline_State and irrespective of invoice existence, and requests the `Paid_Pending_Verification` state as a *separate* outcome that does not condition the recording. Requirement 8.21 covers the two anomaly cases — the current state forms no Legal_Transition to `Paid_Pending_Verification`, or the Deal has no invoice — by retaining the payment, leaving the state unchanged, setting the Payment_Anomaly_Flag with a recorded reason, and notifying Operators. Requirement 8.23 states the resulting invariant: an accepted payment event always leaves exactly one payment record.
+
+A flat transaction cannot deliver that. §3.5.5 sends mapped events through the same validation pipeline as Operator requests, and that pipeline signals a rejection by raising — which in a flat transaction aborts everything the handler has done, including the payment insert. The event would then be recorded as processed with no payment stored anywhere, which is exactly the zero-payment-record outcome Requirement 8.23 forbids.
+
+**Resolution: the transition request is evaluated inside a nested savepoint whose rollback does not abort the enclosing event transaction.**
+
+```python
+def handle_payment_received(event) -> None:
+    with transaction.atomic():                       # enclosing event transaction
+        if not claim_processed_event(event):         # Req 12.5 — first statement
+            return                                  # duplicate, change nothing
+
+        deal = Deal.objects.select_for_update().select_related("lead").get(
+            pk=event.deal_id)                        # Req 8.3 — deal_id resolves
+
+        # Req 8.3 — UNCONDITIONAL. No state check, no invoice check.
+        Payment.objects.create(deal=deal, amount_usd=event.amount,
+                               paid_date=event.paid_date, event_id=event.event_id)
+        deal.payment_received = True
+        deal.paid_date = event.paid_date
+        deal.save(update_fields=["payment_received", "paid_date"])
+
+        anomaly_reason: str | None = None
+        if deal.invoice_id is None:
+            anomaly_reason = NO_INVOICE_ON_PAYMENT          # Req 8.21
+        else:
+            try:
+                with transaction.atomic():                  # NESTED SAVEPOINT
+                    PipelineStateMachine.request(
+                        lead_id=deal.lead_id,
+                        to_state=S.PAID_PENDING_VERIFICATION,
+                        actor=AdapterActor(event.event_id),
+                        expected_from_state=deal.lead.status,
+                        expected_version=None)
+            except ActionRejected as rejection:
+                # Savepoint rolled back: no state change, no history row.
+                # The ENCLOSING transaction — payment insert included — survives.
+                anomaly_reason = illegal_transition_reason(deal.lead.status)
+                record_rejected_event(event, rejection)      # Req 4.9
+
+        if anomaly_reason is not None:                       # Req 8.21, 13.2, 13.6
+            deal.payment_anomaly_flag = True
+            deal.payment_anomaly_reason = anomaly_reason
+            deal.save(update_fields=["payment_anomaly_flag", "payment_anomaly_reason"])
+            NotificationService.generate(event_type=PAYMENT_ANOMALY, lead=deal.lead, ...)
+
+        NotificationService.generate(event_type=PAYMENT_RECEIVED, lead=deal.lead, ...)
+    # One commit. Payment recorded exactly once (Req 8.23); state advanced only if legal.
+```
+
+Four things about this shape are load-bearing:
+
+1. **The `processed_events` claim still commits.** It is written in the enclosing transaction, not in the savepoint, so a rejected transition never releases the claim. The event is not reprocessed on redelivery, and Requirement 12.7's N-deliveries-equals-one-delivery guarantee holds for the anomaly path exactly as it does for the ordinary path — a second delivery of the same payment event finds the claim, discards, and leaves the single payment record and the anomaly flag as they stand.
+2. **The anomaly flag is written in the same enclosing transaction as the payment.** The two facts a Deal in this situation carries — "money arrived" and "this Deal needs a human" — commit together or not at all. There is no window in which a payment is stored with no anomaly marker on a Deal whose state never moved.
+3. **The rejection record goes in the enclosing transaction, not an autonomous one.** §3.13.3 opens a fresh transaction for rejected-attempt records because the action's transaction has already rolled back and would take the record with it. Here only the *savepoint* rolled back, so the enclosing transaction is alive and the Requirement 4.9 rejected-event record is written directly into it. That is strictly better: the record cannot be lost to a second transaction failing on its own.
+4. **Nothing is partially applied, so Requirement 13.10 still holds.** The savepoint rollback is not a partial application — it is the complete non-occurrence of the transition, leaving no `leads.status` change, no `pipeline_state_history` row, and no `state_version` increment. What survives is a different fact recorded by a different criterion, which is the carve-out Requirement 4.9 now states in as many words: its preservation clause is scoped to the fields the rejected transition would itself have written and explicitly does not require discarding the payment values Requirement 8.3 records unconditionally.
 
 Every row of that table is idempotent in effect: timestamp fields are set to the event's value rather than incremented, flags are set rather than toggled, and inserts are guarded by the `processed_events` claim. That is what makes Requirement 12.7 (N deliveries ≡ 1 delivery, for N from 1 to 10) true, and Property 37 tests it directly.
 
@@ -1350,8 +1520,20 @@ erDiagram
         timestamptz unsubscribed_at "Req 13.1 - null = not unsubscribed"
         timestamptz do_not_call_at "Req 13.1 - null = callable"
         boolean manual_review_flag "Req 13.1, 13.6 - default false"
-        timestamptz last_activity_at "Req 13.1, 13.14 - denormalized, Req 2.1"
+        timestamptz last_activity_at "Req 13.1, 13.6, 13.14 - REQUIRED, denormalized, Req 2.1"
         timestamptz created_at "required"
+    }
+
+    SITE_PROJECTS {
+        bigint id PK "Req 6.11 tiebreak on equal created_at"
+        bigint lead_id FK "required"
+        text preview_url
+        integer page_count "0-200"
+        text review_state "Site_Review_State, CHECK, default Generating"
+        timestamptz created_at "Req 13.5, 6.11 - REQUIRED, immutable, the most-recent ordering key"
+        timestamptz generated_at "Req 6.1, 13.5 - unset until generation finishes"
+        timestamptz approved_at "Req 6.4, 6.7 - absorbing once set"
+        text rejection_reason "Req 6.5 - 10-1000 chars when Rejected"
     }
 
     DEALS {
@@ -1366,6 +1548,8 @@ erDiagram
         bigint verified_by_operator_id FK "Req 13.2, 8.5"
         boolean delivery_sent "trigger-guarded"
         timestamptz delivered_date "trigger-guarded"
+        boolean payment_anomaly_flag "Req 13.2, 13.6, 8.21 - required, default false"
+        text payment_anomaly_reason "Req 13.2, 13.6, 8.21 - 1-500 chars while flagged, else unset"
     }
 
     RELEASE_AUTHORIZATIONS {
@@ -1399,11 +1583,12 @@ erDiagram
     }
 
     OUTREACH_REQUESTS {
-        uuid id PK "the outreach_request_id, Req 5.9"
+        uuid id PK "the outreach_request_id, Req 5.9 = the Idempotency_Key, Req 12.1"
         bigint lead_id FK
         text channel "email | call"
         text status "pending|succeeded|failed|indeterminate"
         text failure_reason
+        timestamptz clearance_timestamp "Req 13.5, 5.18 - REQUIRED, set at Phase 1, copied to the row"
         timestamptz reserved_at
     }
 
@@ -1459,15 +1644,21 @@ Constraints are declared in the database, not only in forms, so the invariant ho
 | `leads` | `state_version INTEGER NOT NULL DEFAULT 0 CHECK (state_version >= 0)` | 13.1, 13.6, 4.13 |
 | `leads` | `manual_review_flag BOOLEAN NOT NULL DEFAULT false` | 13.1, 13.6, 5.6 |
 | `leads` | `timezone IS NULL OR char_length ≤ 64` (IANA name); `region IS NULL OR char_length ≤ 200` | 13.1, 13.6, 5.17 |
-| `leads` | `unsubscribed_at`, `do_not_call_at`, `last_activity_at` each `TIMESTAMPTZ` or NULL | 13.1, 13.6, 13.11 |
+| `leads` | `unsubscribed_at`, `do_not_call_at` each `TIMESTAMPTZ` or NULL | 13.1, 13.6, 13.11 |
+| `leads` | `last_activity_at TIMESTAMPTZ` **NOT NULL** — set at Lead creation from the genesis history row and never unset, so it is never in the nulls-last block of the Requirement 2.4 sort | 13.1, 13.6, 13.14 |
 | `deals` | `lead_id` NOT NULL **UNIQUE** | 13.2, 13.12 |
 | `deals` | `agreed_price IS NULL OR BETWEEN 550 AND 1000` | 7.6, 13.2 |
 | `deals` | `payment_verified_at TIMESTAMPTZ(3)` or NULL; `verified_by_operator_id REFERENCES operators(id)` or NULL | 13.2, 8.5, 8.17 |
+| `deals` | `payment_anomaly_flag BOOLEAN NOT NULL DEFAULT false`; `payment_anomaly_reason` 1–500 chars while the flag is true and NULL while it is false, as a two-way `CHECK` | 13.2, 13.6, 8.21, 8.22 |
 | `emails` | `lead_id`, `sent_at` NOT NULL; `subject` 1–200; `body` 1–50000; `unsubscribed` NOT NULL DEFAULT false | 13.3 |
+| `emails` | `clearance_timestamp TIMESTAMPTZ` **NOT NULL**, copied from the `outreach_requests` reservation; `late_opt_out_marker BOOLEAN NOT NULL DEFAULT false` | 13.3, 5.18, 5.21 |
 | `emails` | `outreach_request_id` UNIQUE | 5.12 |
 | `calls` | `attempt_number BETWEEN 1 AND 20`; `outcome IN ('answered','busy','no-answer')`; `notes` ≤ 5000 | 13.4 |
+| `calls` | `late_opt_out_marker BOOLEAN NOT NULL DEFAULT false`; `clearance_timestamp TIMESTAMPTZ` NOT NULL **when `outreach_request_id` is set** and NULL only for an Operator-logged call with no reservation, as a `CHECK (outreach_request_id IS NULL OR clearance_timestamp IS NOT NULL)` | 13.4, 5.18, 5.22, 3.5 |
 | `calls` | `outreach_request_id` UNIQUE | 5.12 |
+| `outreach_requests` | `clearance_timestamp TIMESTAMPTZ` **NOT NULL** — the Clearance_Timestamp recorded at reservation and the source both row-level copies are taken from | 13.5, 5.18 |
 | `site_projects` | `review_state IN ('Generating','Ready_For_Review','Approved','Rejected')` DEFAULT `'Generating'`; `page_count BETWEEN 0 AND 200` | 6.8, 13.7 |
+| `site_projects` | `created_at TIMESTAMPTZ` **NOT NULL** and **immutable** — set at record creation, never changed, enforced by a `BEFORE UPDATE` trigger rejecting any change; it is the ordering key for a Lead's most recent Site_Project | 13.5, 6.11 |
 | `site_projects` | `rejection_reason` 10–1000 chars when `review_state='Rejected'` | 6.5, 6.9 |
 | `invoices` | `deal_id` UNIQUE; `invoice_number` UNIQUE; `amount BETWEEN 550 AND 1000` | 8.1, 8.2 |
 | `payments` | `amount_usd BETWEEN 1 AND 1000` | 8.3 |
@@ -1519,12 +1710,71 @@ Every trigger exists because the corresponding requirement is phrased as an inva
 | `trg_delivery_guard` | `deals` BEFORE UPDATE | `delivery_sent` requires verified payment + authorization + timestamp ordering | 8.11, 8.12 |
 | `trg_agreed_price_frozen` | `deals` BEFORE UPDATE | `agreed_price` immutable once an invoice exists | 7.11 |
 | `trg_deal_state_consistency` | `deals` BEFORE UPDATE | `payment_verified_at` non-null whenever the Lead is at or past `Payment_Verified`, so the flag and the state cannot diverge | 8.17, 8.18, 8.19, 8.20, 8.5 |
-| `trg_no_email_after_unsubscribe` | `emails` BEFORE INSERT | reject if `sent_at ≥ leads.unsubscribed_at` | 5.11 |
-| `trg_no_email_after_bounce` | `emails` BEFORE INSERT | reject if a bounce exists for the Lead's current `contact_email` | 5.6 |
-| `trg_no_call_after_dnc` | `calls` BEFORE INSERT | reject if `timestamp ≥ leads.do_not_call_at` | 5.16 |
-| `trg_preview_link_approved` | `emails` BEFORE INSERT | if `site_project_id` set, that site's `approved_at` is non-null and `≤ sent_at` | 6.7 |
+| `trg_no_email_after_unsubscribe` | `emails` BEFORE INSERT | reject if `NEW.clearance_timestamp ≥ leads.unsubscribed_at` | 5.19 |
+| `trg_no_email_after_bounce` | `emails` BEFORE INSERT | reject if a bounce exists for the Lead's current `contact_email` whose `occurred_at` is earlier than `NEW.clearance_timestamp` | 5.6 |
+| `trg_no_call_after_dnc` | `calls` BEFORE INSERT | reject if `NEW.clearance_timestamp ≥ leads.do_not_call_at`; skip when `NEW.clearance_timestamp` is NULL | 5.20 |
+| `trg_preview_link_approved` | `emails` BEFORE INSERT | if `site_project_id` set, that site's `approved_at` is non-null and `≤ NEW.clearance_timestamp` | 6.7 |
+| `trg_site_created_at_immutable` | `site_projects` BEFORE UPDATE | reject any change to `created_at`, the Requirement 6.11 ordering key | 13.5, 6.11 |
 | `trg_outreach_channel_match` | `emails`, `calls` BEFORE INSERT | row's channel matches the `outreach_requests` reservation (cross-table at-most-one) | 5.12 |
 | `trg_audit_immutable` | `audit_entries` BEFORE UPDATE OR DELETE | raise unconditionally | 11.4 |
+
+**The two compliance triggers compare the Clearance_Timestamp, not the send timestamp.** This is the single most important correction in this revision, so the trigger bodies are written out rather than summarized.
+
+```sql
+-- Requirement 5.19: a recorded email row's clearance PRECEDES the unsubscribe.
+CREATE FUNCTION assert_email_cleared_before_unsubscribe() RETURNS trigger AS $$
+DECLARE unsub_at TIMESTAMPTZ;
+BEGIN
+    SELECT unsubscribed_at INTO unsub_at FROM leads WHERE id = NEW.lead_id;
+    -- Not opted out at all: nothing to compare.
+    IF unsub_at IS NULL THEN RETURN NEW; END IF;
+    -- Reject ONLY when the clearance was not strictly earlier than the opt-out.
+    IF NEW.clearance_timestamp >= unsub_at THEN
+        RAISE EXCEPTION
+          'email clearance % is not earlier than unsubscribed_at % (Req 5.19)',
+          NEW.clearance_timestamp, unsub_at;
+    END IF;
+    RETURN NEW;   -- late opt-out (clearance < unsub_at < sent_at): ACCEPTED,
+                  -- with late_opt_out_marker set by the caller (Req 5.21)
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_no_email_after_unsubscribe BEFORE INSERT ON emails
+    FOR EACH ROW EXECUTE FUNCTION assert_email_cleared_before_unsubscribe();
+```
+
+```sql
+-- Requirement 5.20: a recorded call row THAT CARRIES A CLEARANCE has that
+-- clearance strictly earlier than do_not_call_at. Rows without one are skipped.
+CREATE FUNCTION assert_call_cleared_before_dnc() RETURNS trigger AS $$
+DECLARE dnc_at TIMESTAMPTZ;
+BEGIN
+    -- Requirement 13.4: an Operator-logged call (Req 3.5) carries no
+    -- outreach_requests reservation and therefore no clearance_timestamp.
+    -- Requirement 5.20 quantifies only over call rows that carry one.
+    IF NEW.clearance_timestamp IS NULL THEN RETURN NEW; END IF;
+
+    SELECT do_not_call_at INTO dnc_at FROM leads WHERE id = NEW.lead_id;
+    IF dnc_at IS NULL THEN RETURN NEW; END IF;
+    IF NEW.clearance_timestamp >= dnc_at THEN
+        RAISE EXCEPTION
+          'call clearance % is not earlier than do_not_call_at % (Req 5.20)',
+          NEW.clearance_timestamp, dnc_at;
+    END IF;
+    RETURN NEW;   -- late do-not-call: ACCEPTED with the marker set (Req 5.22)
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_no_call_after_dnc BEFORE INSERT ON calls
+    FOR EACH ROW EXECUTE FUNCTION assert_call_cleared_before_dnc();
+```
+
+**No trigger on this table can now reject an insert for an outreach the adapter already completed.** That claim is worth checking operand by operand, because the previous formulation failed it. Every `BEFORE INSERT` predicate on `emails` and `calls` is now a function only of values that are fixed *before* Phase 2 invokes the adapter:
+
+- `trg_no_email_after_unsubscribe` and `trg_no_call_after_dnc` compare `NEW.clearance_timestamp`, written to the `outreach_requests` reservation in Phase 1 and copied verbatim in Phase 3, against the Lead's opt-out timestamp. The Compliance_Guard evaluated that same comparison immediately before the reservation, so a cleared action always satisfies it. An opt-out arriving later moves `unsubscribed_at` *forward*, which can only make `clearance_timestamp < unsubscribed_at` more true, never less. The predicate is monotone in the safe direction.
+- `trg_preview_link_approved` compares the site's `approved_at` against the same `clearance_timestamp` (§3.8), and `approved_at` is absorbing once set, so it too cannot newly fail after Phase 1.
+- `trg_no_email_after_bounce` is scoped to bounces **recorded before the clearance**: it rejects only when a bounce exists for the Lead's current `contact_email` whose `occurred_at` is earlier than `NEW.clearance_timestamp`. The scoping is necessary for the same reason, and it was the one remaining predicate with the old defect's shape. A bounce event can arrive between Phase 2 and Phase 3 just as an unsubscribe can, and an unscoped `EXISTS` over `email_bounces` would then reject the insert and destroy the record of a sent email. It is also the reading Requirement 5.6 actually states: a recorded bounce blocks every *subsequent* email action, and an action cleared before the bounce was recorded is not subsequent to it. The bounce still sets `manual_review_flag` and still blocks every later action, so nothing about the compliance behavior weakens — only the retroactive destruction of an already-sent row goes away.
+- `trg_outreach_channel_match` compares the row's table against the channel recorded on the reservation in Phase 1. Both operands are fixed before submission.
+
+Contrast the predicate this revision removed. `sent_at ≥ leads.unsubscribed_at` reads a value assigned in Phase 3, so an unsubscribe processed between the adapter returning success and the recording transaction committing flipped it from true to false *after the message was already sent*. The insert raised, Phase 3 rolled back, and the compliance log lost the one row proving what had happened. Requirements 5.19 through 5.22 replace that with a submission-time predicate plus an explicit Late_Opt_Out_Marker, so the same real-world sequence now produces a recorded, marked, notified row instead of silence. Requirements 5.11 and 5.16 continue to guarantee that no such submission is *made* after an opt-out; they are enforced at the chokepoint (§3.6.1) because submission is a network act and no database constraint can observe it.
 
 ### 4.7 Indexing strategy
 
@@ -1545,6 +1795,15 @@ CREATE INDEX idx_leads_search_trgm     ON leads USING gin (
 ```
 
 The trigram GIN index is what makes case-insensitive **substring** search (Requirement 2.3) fast; a B-tree cannot serve a leading-wildcard match.
+
+**Most recent Site_Project — the Requirement 6.11 lookup**
+
+```sql
+CREATE INDEX idx_site_projects_lead_created
+    ON site_projects (lead_id, created_at DESC, id DESC);   -- Req 6.11
+```
+
+The index column order matches the Requirement 6.11 ordering exactly, including the id tiebreak, so the `LATERAL … ORDER BY created_at DESC, id DESC LIMIT 1` of §3.3 is a single index-scan step per Lead rather than a sort of that Lead's generation history. The same index serves the `page_count` resolution of §3.9 and the Deal_Room_View's latest-Site_Project read (§3.4). It is deliberately keyed on `created_at` and not `generated_at`: a `generated_at` index cannot answer this lookup at all for a Lead whose newest Site_Project is still `Generating`, which is the case the ordering rule exists to handle.
 
 **Analytics — 3s at 5,000 Leads / 50,000 emails (Requirement 10.14)**
 
@@ -1579,7 +1838,7 @@ The leading-column-plus-`occurred_at DESC` shape means each single-filter search
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
-The requirements are unusually property-dense: 23 acceptance criteria are phrased as `FOR ALL … SHALL` invariants, three of them added in the revision that declared the fields this design depends on — Requirements 8.19, 10.15, and 13.14. The properties below were derived by classifying every acceptance criterion (property / example / edge case / integration / smoke) and then consolidating logically redundant candidates — for instance the precondition-check form and the invariant form of the same compliance rule collapse into the invariant form, which is strictly stronger because it holds over arbitrary action interleavings rather than at a single call site.
+The requirements are unusually property-dense: 26 acceptance criteria are phrased as `FOR ALL … SHALL` invariants. Three were added in the revision that declared the fields this design depends on — Requirements 8.19, 10.15, and 13.14 — and three more in the revision that separated the compliance guarantee from storage and the payment record from the state transition: Requirements 5.19, 5.20, and 8.23. The properties below were derived by classifying every acceptance criterion (property / example / edge case / integration / smoke) and then consolidating logically redundant candidates — for instance the precondition-check form and the invariant form of the same compliance rule collapse into the invariant form, which is strictly stronger because it holds over arbitrary action interleavings rather than at a single call site.
 
 Each property names the component that upholds it, the generator that exercises it, and the invariant asserted.
 
@@ -1691,14 +1950,14 @@ Each property names the component that upholds it, the generator that exercises 
 - **Invariant**: rejection occurs, the discriminating message is correct, and the history table is unchanged
 - **Validates: Requirements 4.10**
 
-### Property 13: No prospect email is ever sent after an unsubscribe, and no call after a do-not-call
+### Property 13: No outreach is ever submitted after an opt-out, every recorded row was cleared before one, and a late opt-out marks the row rather than losing it
 
-*For all* Leads with `unsubscribed_at` set, the count of prospect-email rows whose `sent_at` is at or after that `unsubscribed_at` value is zero; *for all* Leads with `do_not_call_at` set, the count of call rows whose timestamp is at or after that `do_not_call_at` value is zero — and this holds over arbitrary interleavings of opt-out events, single sends, bulk sends, and retries.
+*For all* Leads with `unsubscribed_at` set, the count of prospect-email requests submitted to the Pipeline_Adapter carrying a Clearance_Timestamp at or after that `unsubscribed_at` value is zero, and *for all* Leads with `do_not_call_at` set, the count of call requests submitted carrying a Clearance_Timestamp at or after that value is zero. *For all* recorded prospect-email rows whose Lead has `unsubscribed_at` set, the row's `clearance_timestamp` is strictly earlier than that value, and *for all* recorded call rows that carry a `clearance_timestamp` and whose Lead has `do_not_call_at` set, that value is strictly earlier than the Lead's `do_not_call_at`. *For any* submission the adapter reports as successful whose Lead opts out after the Clearance_Timestamp and before the row is written, the row is nonetheless recorded, carries `late_opt_out_marker = true`, and produces a notification — and in no interleaving does an adapter-successful outreach leave zero recorded rows. All of this holds over arbitrary interleavings of opt-out events, single sends, bulk sends, and retries.
 
-- **Upheld by**: the `ComplianceGuard` chokepoint plus the `trg_no_email_after_unsubscribe` and `trg_no_call_after_dnc` database triggers (§3.6.1)
-- **Generator**: a stateful machine over a pool of Leads with rules `deliver_unsubscribe_event`, `deliver_bounce_event`, `set_do_not_call`, `attempt_single_send`, `attempt_bulk_send`, `attempt_call`, `retry_last_outreach`, `change_contact_email`
-- **Invariant**: after every rule, both counts are zero across all Leads
-- **Validates: Requirements 5.3, 5.4, 5.8, 5.11, 5.16**
+- **Upheld by**: the submission half by the `ComplianceGuard` chokepoint minting a `ClearedOutreach` that carries its own `evaluated_at` as the Clearance_Timestamp, so no adapter call is reachable without one (§3.6.1); the stored half by `trg_no_email_after_unsubscribe` and `trg_no_call_after_dnc` comparing `clearance_timestamp` rather than `sent_at` (§4.6); the marker by Phase 3 recording on adapter success regardless of a later opt-out (§3.6.4)
+- **Generator**: the `ComplianceMachine` over a pool of Leads, with rules `deliver_unsubscribe_event`, `deliver_bounce_event`, `set_do_not_call`, `attempt_single_send`, `attempt_bulk_send`, `attempt_call`, `retry_last_outreach`, `change_contact_email`, `log_operator_call_without_reservation` (a Requirement 3.5 call row with a null `clearance_timestamp`, which the call trigger must skip), and — the rule that falsifies the old design — `opt_out_between_adapter_success_and_row_write`, which suspends a submission after the adapter has returned success in Phase 2, delivers an `unsubscribed` or do-not-call event for that Lead, and only then lets Phase 3 commit
+- **Invariant**: after every rule, three families hold simultaneously. (1) Submission: no `adapter_invocations` row for `send_prospect_email` or `log_outbound_call` exists whose reservation's `clearance_timestamp` is at or after its Lead's opt-out timestamp. (2) Storage: every `emails` row's `clearance_timestamp` is strictly earlier than its Lead's `unsubscribed_at` where one is set, and every `calls` row with a non-null `clearance_timestamp` is strictly earlier than its Lead's `do_not_call_at` where one is set; a call row with a null `clearance_timestamp` is exempt and its presence never fails the check. (3) Late opt-out: for every `opt_out_between_adapter_success_and_row_write` execution, exactly one row exists for that `outreach_request_id`, its `late_opt_out_marker` is true, one compliance notification was generated for it, and its reservation status is `succeeded` — never `indeterminate`, and never zero rows
+- **Validates: Requirements 5.3, 5.4, 5.8, 5.11, 5.16, 5.18, 5.19, 5.20, 5.21, 5.22**
 
 ### Property 14: Calls are permitted exactly within the local calling window
 
@@ -1759,9 +2018,9 @@ Each property names the component that upholds it, the generator that exercises 
 *For all* combinations of integer `page_count` in 0–200, integer `website_condition` in 1–5, and integer `urgency` in 1–5, the Suggested_Price equals `min(1000, 550 + 150·max(0, page_count−3) + 150·[condition ≤ 2] + 100·[urgency ≥ 4])` and is a whole-dollar integer greater than or equal to 550 and less than or equal to 1000. *For any* input tuple in which at least one of the three attributes is absent, the Suggested_Price is the Price_Anchor of 850, is flagged as a fallback, and names exactly the absent attributes.
 
 - **Upheld by**: `Pricing_Advisor.suggested_price` and `resolve_inputs` (§3.9, §2.1)
-- **Generator**: the full integer domain of the three inputs, plus all seven non-empty subsets of absent attributes; also out-of-domain values to confirm they are rejected upstream rather than silently computed
-- **Invariant**: `result == independently_recomputed_formula`; `isinstance(result, int)`; `550 <= result <= 1000`; on any absence `result == 850 and is_fallback and set(missing) == absent_set`
-- **Validates: Requirements 7.1, 7.2, 7.7, 7.10, 7.12**
+- **Generator**: the full integer domain of the three inputs, plus all seven non-empty subsets of absent attributes; also out-of-domain values to confirm they are rejected upstream rather than silently computed. The `page_count` half of the generator builds the resolution chain rather than passing a bare integer, and includes the case Requirement 6.11 exists for: a Lead whose **most recent** Site_Project has `review_state = Generating` and a **null `generated_at`**, sitting behind one or more older completed cycles with different `page_count` values, so that resolution against a null ordering key would pick the wrong row or fail outright. Variants cover the in-flight row carrying a `page_count` and carrying none (falling through to `estimated_page_count`), plus two Site_Projects sharing a `created_at` so the id tiebreak is exercised
+- **Invariant**: `result == independently_recomputed_formula`; `isinstance(result, int)`; `550 <= result <= 1000`; on any absence `result == 850 and is_fallback and set(missing) == absent_set`; and the resolved `page_count` equals the `page_count` of the Site_Project with the greatest `(created_at, id)` whenever one exists — including when that row's `generated_at` is null — otherwise `estimated_page_count`, otherwise absent
+- **Validates: Requirements 6.11, 7.1, 7.2, 7.7, 7.10, 7.12**
 
 ### Property 21: A persisted agreed_price is always operator-submitted and always within the band
 
@@ -1840,8 +2099,8 @@ Each property names the component that upholds it, the generator that exercises 
 *For any* generated dataset of Leads, state histories, emails, calls, invoices, payments, and Variant assignments, and *for any* selected date range, every metric the Analytics_View emits — Reached_Count, Current_State_Count, email open/click/reply/unsubscribe rates, call connect rate, close rate, mean agreed_price, per-Variant send count and reply/meeting/close rates, revenue, invoice counts, and median days-to-payment — equals the value computed by an independent in-Python reference implementation over the same data, including the even-size median rule and the whole-dollar rounding.
 
 - **Upheld by**: the Analytics_View query set (§3.11)
-- **Generator**: random datasets with heavy edge-case bias — empty sets, single records, ties, even-sized payment sets, records exactly on range boundaries, Variant values with send counts spanning 0–60
-- **Invariant**: model-based — every emitted metric equals the reference value; the insufficient-sample indicator appears exactly when a Variant send count is below 30, accompanied by the count
+- **Generator**: random datasets with heavy edge-case bias — empty sets, single records, ties, even-sized payment sets, records exactly on range boundaries, Variant values with send counts spanning 0–60. The dataset also delivers `unsubscribed` events through the real event intake so that `emails.unsubscribed` is populated by its actual writer rather than seeded directly, covering both attribution paths of Requirement 5.8: events carrying an explicit email identifier naming an arbitrary one of the Lead's email rows, and events omitting it so the greatest-`sent_at` row is chosen. Leads with several email rows, Leads with exactly one, and Leads with none (Requirement 5.23) are all represented, as are unsubscribe events whose attributed row falls outside the selected range while the event falls inside it — the boundary case §3.11 records
+- **Invariant**: model-based — every emitted metric equals the reference value; the insufficient-sample indicator appears exactly when a Variant send count is below 30, accompanied by the count. The unsubscribe-rate numerator is recomputed from the stored `emails.unsubscribed` flags by the reference implementation, so a non-zero numerator is now reachable and a regression that stops writing the flag falsifies the property instead of passing trivially at zero
 - **Validates: Requirements 10.1, 10.3, 10.4, 10.5, 10.6, 10.7, 10.12, 10.13**
 
 ### Property 30: The eleven state buckets partition the range, and every rate is a well-formed fraction
@@ -1873,10 +2132,10 @@ Each property names the component that upholds it, the generator that exercises 
 
 ### Property 33: Exactly one Audit_Entry per applied action and per rejected attempt
 
-*For all* sequences of applied Operator actions and rejected action attempts across the ten audited action types, exactly one Audit_Entry exists per action or attempt, a submission discarded as a duplicate adds none beyond the entry recorded for the original submission, `before_value` is not-applicable for a record creation, and `after_value` is not-applicable for a rejected attempt.
+*For all* sequences of applied Operator actions and rejected action attempts across the eleven audited action types, exactly one Audit_Entry exists per action or attempt, a submission discarded as a duplicate adds none beyond the entry recorded for the original submission, `before_value` is not-applicable for a record creation, and `after_value` is not-applicable for a rejected attempt.
 
 - **Upheld by**: `AuditLogger.record` inside the acting transaction, and the autonomous rejection transaction (§3.12, §3.13.3)
-- **Generator**: a stateful machine issuing random valid actions, random invalid actions, random unauthorized actions, and random duplicate replays across all ten action types
+- **Generator**: a stateful machine issuing random valid actions, random invalid actions, random unauthorized actions, and random duplicate replays across all eleven action types — including the payment-anomaly-clearing action of Requirement 8.22, both as an applied Agent/Admin action carrying the recorded anomaly reason as `before_value` and as a rejected attempt by a Viewer
 - **Invariant**: after every rule, `count(audit_entries) == applied_count + rejected_count`; duplicates contribute zero; the null semantics of `before_value`/`after_value` match the action class
 - **Validates: Requirements 11.1, 11.2, 11.3, 11.10**
 
@@ -1921,8 +2180,8 @@ Each property names the component that upholds it, the generator that exercises 
 *For any* inbound event payload, the event is accepted only when its event type is one of the seven, every field required for that type is present and valid, and its `lead_id` resolves to an existing Lead; every other payload is rejected with the payload and rejection reason recorded, no Pipeline_State change applied, and all Lead, Deal, email, call, Site_Project, invoice, and payment records unchanged.
 
 - **Upheld by**: the per-type inbound schemas (§3.14.3)
-- **Generator**: well-formed payloads for each of the seven types; payloads with each required field omitted in turn; invalid timestamps; absent `lead_id`s; `payment_received` payloads missing `deal_id` or amount; arbitrary strings as the event type; `event_id` values of length 0, 1, 128, and 129
-- **Invariant**: `accepted == well_formed(payload)`; every rejection leaves an unchanged snapshot and a recorded rejection row
+- **Generator**: well-formed payloads for each of the seven types; payloads with each required field omitted in turn; invalid timestamps; absent `lead_id`s; `payment_received` payloads missing `deal_id` or amount; arbitrary strings as the event type; `event_id` values of length 0, 1, 128, and 129. `unsubscribed` payloads additionally exercise the **optional email identifier** Requirement 12.2 admits: present and naming one of that Lead's own email rows, present and naming an email row belonging to a different Lead, present but naming no existing email row, and omitted entirely — the last of which must remain a *valid* event, since Requirement 12.2 states in as many words that an `unsubscribed` event omitting the identifier is well formed
+- **Invariant**: `accepted == well_formed(payload)`; every rejection leaves an unchanged snapshot and a recorded rejection row; an `unsubscribed` event with no email identifier is accepted rather than rejected, so a validator that mistakenly promotes the optional field to a required one is caught here rather than in production
 - **Validates: Requirements 12.2, 12.6, 12.9**
 
 ### Property 39: Adapter operations always return exactly one well-formed result and never record on failure
@@ -1930,8 +2189,8 @@ Each property names the component that upholds it, the generator that exercises 
 *For any* of the five outbound operations and *any* underlying behavior — success, raised exception, or a hang exceeding the operation timeout — the adapter returns exactly one result of success or failure, never propagates an exception to its caller, carries a failure reason of 1 to 500 characters on every failure, and on failure records no email row, call row, invoice record, or Release_Authorization while leaving the Lead's Pipeline_State and all records unchanged.
 
 - **Upheld by**: the `TimeoutEnforcingAdapter` facade and the three-phase protocol that records only on success (§3.14.1, §3.6.4)
-- **Generator**: the five operations × underlying behaviors `{success, raise(random exception type), hang past the timeout}` × random arguments
-- **Invariant**: the return value is an `AdapterResult` with `status ∈ {success, failure}`; no exception escapes; `1 <= len(failure_reason) <= 500` on failure; on failure the snapshot of the four tables is unchanged and a retry reuses the same `outreach_request_id`
+- **Generator**: the five operations × underlying behaviors `{success, raise(random exception type), hang past the timeout}` × random arguments, with each operation driven from an Operator confirmation so that the key under test is the one that confirmation generated, and with retry counts of 1–10 per confirmation
+- **Invariant**: the return value is an `AdapterResult` with `status ∈ {success, failure}`; no exception escapes; `1 <= len(failure_reason) <= 500` on failure; every invocation of every one of the five operations carries an Idempotency_Key, and every retry of one confirmed action carries **the same Idempotency_Key** as its first attempt (Requirements 12.1, 12.4) — which for `send_prospect_email` and `log_outbound_call` is that action's `outreach_request_id`; on failure the snapshot of the four tables is unchanged
 - **Validates: Requirements 12.1, 12.4, 12.8**
 
 ### Property 40: Stub mode records everything and transmits nothing
@@ -1963,12 +2222,12 @@ Each property names the component that upholds it, the generator that exercises 
 
 ### Property 43: last_activity_at always equals the latest source timestamp
 
-*For all* Lead records and *any* interleaving of the writes that advance activity, the stored `last_activity_at` equals the maximum over that Lead's email `sent_at`, `opened_at`, `clicked_at`, and `reply_at` values, its call record timestamps, its Pipeline_State change timestamps, and its Operator action timestamps, and is unset when the Lead has none of those source timestamps.
+*For all* Lead records and *any* interleaving of the writes that advance activity, the stored `last_activity_at` is non-null and equals the maximum over that Lead's email `sent_at`, `opened_at`, `clicked_at`, and `reply_at` values, its call record timestamps, its Pipeline_State change timestamps, and its **applied** Operator action timestamps — the timestamps of rejected action attempts being excluded from that maximum. *For any* rejected action attempt against a Lead, the column does not advance.
 
-- **Upheld by**: the denormalized `leads.last_activity_at` column advanced inside the same transaction as every write that can advance it, with the nightly consistency job as the independent verifier (§3.3)
-- **Generator**: a stateful machine over one Lead whose rules each write exactly one source timestamp — `record_email(sent_at)`, `apply_email_event(open | click | reply)`, `record_call(timestamp)`, `accept_transition`, `perform_audited_operator_action` — applied in Hypothesis-chosen orders, with timestamps drawn to include out-of-order values that are earlier than the current maximum, values equal to it, and duplicate values
-- **Invariant**: after every rule, `lead.last_activity_at == max(all source timestamps)` recomputed independently from the source tables, and `lead.last_activity_at is None` exactly when the recomputed set is empty — so an out-of-order write never moves the value backwards
-- **Validates: Requirements 13.14**
+- **Upheld by**: the denormalized `leads.last_activity_at` column, declared `NOT NULL` and initialized at Lead creation from the `occurred_at` of that Lead's genesis `pipeline_state_history` row, advanced inside the same transaction as every write that can advance it, with the nightly consistency job as the independent verifier (§3.3, §4.3)
+- **Generator**: the `LastActivityMachine` over one Lead, whose rules each write exactly one source timestamp — `record_email(sent_at)`, `apply_email_event(open | click | reply)`, `record_call(timestamp)`, `accept_transition`, `perform_audited_operator_action` — applied in Hypothesis-chosen orders, with timestamps drawn to include out-of-order values earlier than the current maximum, values equal to it, and duplicates. One further rule carries the exclusion clause: `attempt_rejected_action`, which issues an action the dashboard **refuses** — an illegal transition, an unauthorized action from a Viewer, an out-of-range field edit — each of which commits a rejected-attempt Audit_Entry through the autonomous transaction of §3.13.3 while applying nothing
+- **Invariant**: after every rule, `lead.last_activity_at is not None`, and `lead.last_activity_at == max(applied source timestamps)` recomputed independently from the source tables with rejected-attempt audit rows filtered out — so an out-of-order write never moves the value backwards. After every `attempt_rejected_action` rule specifically, the column is byte-identical to its value before that rule even though `audit_entries` grew by one, which is the assertion that the source set excludes rejected attempts. The `is None` case is deliberately **not** asserted, because it is unreachable: the genesis history row is written in the same transaction as the Lead, so the source set is non-empty from the instant the Lead exists and a null column is a constraint violation rather than a valid state
+- **Validates: Requirements 13.1, 13.14**
 
 ### Property 44: The verification timestamp and the Payment_Verified state never diverge
 
@@ -1987,6 +2246,15 @@ Each property names the component that upholds it, the generator that exercises 
 - **Generator**: random sequences of transition requests over one Lead where each request's submitted version is drawn from `{current, current − k for random k, current + k for random k, absent}` and the target state is drawn from the full `PipelineState` enum; plus `N ∈ [2, 8]` concurrent submissions of the *same* version from separate database connections
 - **Invariant**: after every request, `lead.state_version == count(pipeline_state_history rows for that lead) − 1` (the genesis row is not a transition), which is equivalently the count of accepted transitions; every request with `submitted_version != current_version` is rejected with the state-changed message and leaves a snapshot identical apart from one rejected-attempt Audit_Entry; under concurrency exactly one submission of a shared version is accepted and `state_version` advances by exactly one
 - **Validates: Requirements 4.13**
+
+### Property 46: An accepted payment event always leaves exactly one payment record
+
+*For all* payment events whose `deal_id` resolves to an existing Deal and that the Pipeline_Adapter accepts, exactly one payment record for that event exists after the event is processed — irrespective of the Lead's Pipeline_State at the time of the event, irrespective of whether an invoice record exists for that Deal, and irrespective of how many times the event is delivered. *For any* such event whose mapped `Paid_Pending_Verification` transition is rejected, or whose Deal has no invoice, the payment amount, `paid_date`, and `payment_received` are retained, the Pipeline_State is unchanged, the Payment_Anomaly_Flag is set with a recorded reason naming which condition applied, and the flag is cleared by no Pipeline_Adapter event and no Pipeline_State change.
+
+- **Upheld by**: the unconditional payment insert in the enclosing event transaction with the transition request evaluated in a nested savepoint whose rejection does not abort it, the anomaly flag and reason written in that same enclosing transaction, and the `processed_events` claim committing with it so a redelivery adds nothing (§3.14.3, §3.7.6)
+- **Generator**: the `ReleaseSafetyMachine` rule set reused as an invariant mixin (as Properties 21 and 33 already are), extended with two rules that reach the cases the ordinary money path never produces: `deliver_payment_event_at_arbitrary_state`, which forces the Lead into each of the eleven Pipeline_States — including the eight from which `Paid_Pending_Verification` is not a Legal_Transition — before delivering the event, and `deliver_payment_event_without_invoice`, which delivers it for a Deal that has no invoice record. Both are crossed with repeat delivery counts `N ∈ [1, 10]` of the same `event_id`, with random amounts in `[1, 1000]`, and with a following `clear_payment_anomaly` rule issued as an Agent, as an Admin, as a Viewer, and as a subsequent legal transition or adapter event
+- **Invariant**: after every rule, for every accepted payment event, `count(payments where event_id = E) == 1` — never zero and never more than one — and the Deal's `payment_received` is true with `paid_date` set. For every execution in which the transition was rejected or no invoice existed: the Lead's `status` is byte-identical to its value before the event, no `pipeline_state_history` row was added, `payment_anomaly_flag` is true, `payment_anomaly_reason` names either the unexpected Pipeline_State or the absent invoice, and one anomaly notification was generated. `payment_anomaly_flag` becomes false only after a `clear_payment_anomaly` rule issued by an Agent or Admin, which leaves exactly one Audit_Entry of the payment-anomaly-clearing type carrying the reason as `before_value`; a Viewer's attempt leaves the flag set, and no adapter event or state change ever clears it
+- **Validates: Requirements 8.3, 8.21, 8.22, 8.23**
 
 
 ---
@@ -2019,6 +2287,21 @@ Two policies deserve emphasis because they are easy to get wrong:
 The three-phase protocol (§3.6.4) means a failure or timeout during Phase 2 has one visible effect: the `outreach_requests` row transitions from `pending` to `failed` with the reason. No email row, call row, invoice, or authorization is created, satisfying Requirements 12.4 and 12.8. The Operator sees the reason and a retry control that reuses the same `outreach_request_id`.
 
 The one indeterminate case — a crash between the adapter returning and the Phase 3 commit — is surfaced rather than guessed at. A reconciliation job marks reservations pending beyond 5 minutes as `indeterminate`, and the Deal_Room_View displays them with an explicit "we do not know whether this was sent" message and a manual resolution control. Guessing in either direction is worse: auto-retrying risks a duplicate contact, and silently marking it failed risks the Operator sending a second copy.
+
+**The late opt-out is a different case, and is not indeterminate at all (Requirements 5.21, 5.22).** Adapter success followed by an opt-out that lands before the Phase 3 write is a case where the outcome is fully *known*: the message was sent, and the Lead has since opted out. It is therefore handled by recording, not by surfacing an unknown. Phase 3 writes the email row (or call row) with its reserved `clearance_timestamp`, sets `late_opt_out_marker = true`, and generates a notification so Operators learn of the late opt-out within 60 seconds of the row being recorded. The `outreach_requests` row moves to `succeeded`, because it did.
+
+The two cases are worth holding apart deliberately, since both live in the same phase boundary:
+
+| | Indeterminate send (§3.6.4) | Late opt-out (Req 5.21, 5.22) |
+|---|---|---|
+| What happened | Crash or loss of the process between Phase 2 and Phase 3 | Phase 2 succeeded; an opt-out was processed before Phase 3 committed |
+| Is the outcome known? | No — the send may or may not have occurred | Yes — the send occurred |
+| Row recorded? | No. The reservation stays `pending`, then `indeterminate` | **Yes**, with `late_opt_out_marker = true` |
+| Reservation status | `indeterminate` | `succeeded` |
+| Operator sees | "we do not know whether this was sent" + manual resolution | the recorded row flagged as sent before the opt-out was processed, plus a notification |
+| Resolution | Human decision, never automatic | None needed; the marker *is* the resolution |
+
+Conflating the two was the substance of the defect this revision removes. Treating a late opt-out as a failure — which is what a trigger comparing `sent_at` against `unsubscribed_at` forced, by rolling Phase 3 back — produced neither an accurate log nor an indeterminate reservation, but a *silently missing* record of a message that had definitely been delivered. The marker preserves the fact and the notification puts a human on it, which is what a compliance record is for.
 
 ### 5.3 Audit write failure rejects the action
 
@@ -2099,11 +2382,11 @@ The rulings that follow-up needs are the ones the requirements' Out of Scope sec
 | Adapter doubles | the real `StubPipelineAdapter` plus `respx` for the future live implementation | Testing against the stub is testing a shipped component, not a mock |
 | Architecture rules | `import-linter` | The release-gate and compliance-chokepoint contracts (§3.0.1, §3.7.2) |
 
-Property-based testing **is** appropriate for this feature. The system contains a finite state machine with a declared legal-edge set, a pure pricing function, several idempotency requirements, and twenty-three acceptance criteria already written as universally quantified invariants. Those are textbook property targets. The parts of the system that are *not* — server-rendered markup details, performance budgets, external provider wiring — are covered by the example, integration, and performance tiers below, per the prework classification.
+Property-based testing **is** appropriate for this feature. The system contains a finite state machine with a declared legal-edge set, a pure pricing function, several idempotency requirements, and twenty-six acceptance criteria already written as universally quantified invariants. Those are textbook property targets. The parts of the system that are *not* — server-rendered markup details, performance budgets, external provider wiring — are covered by the example, integration, and performance tiers below, per the prework classification.
 
 ### 7.2 Property-based tests
 
-Each of the 45 properties above is implemented as **exactly one** property-based test, configured for a minimum of 100 iterations and tagged with a comment referencing the design property.
+Each of the 46 properties above is implemented as **exactly one** property-based test, configured for a minimum of 100 iterations and tagged with a comment referencing the design property.
 
 ```python
 # Feature: deal-room-dashboard, Property 20: For all combinations of integer
@@ -2132,12 +2415,12 @@ def test_property_20_suggested_price_matches_formula_and_bounds(
 | Machine | Rules | Invariants asserted after every step | Properties |
 |---|---|---|---|
 | `PipelineHistoryMachine` | request transition, deliver event, attempt creation with state | history legality (four clauses) | 9 |
-| `ComplianceMachine` | unsubscribe, bounce, set DNC, change email, single send, bulk send, call, retry | zero post-opt-out emails, zero post-DNC calls | 13 |
+| `ComplianceMachine` | unsubscribe, bounce, set DNC, change email, single send, bulk send, call, retry, log Operator call with no reservation, **opt out between adapter success and row write** | zero submissions cleared at or after an opt-out; every recorded row's clearance strictly precedes the opt-out; a late opt-out yields a recorded row with the marker set and a notification, never zero rows | 13 |
 | `OutreachIdempotencyMachine` | confirm, fail-then-retry, replay id, concurrent submit | at most one row per `outreach_request_id` across both tables | 15 |
 | `SiteGateMachine` | finish generation, approve, reject, regenerate, attempt send with/without preview URL | zero emails referencing a not-yet-approved site | 18 |
 | `ReleaseSafetyMachine` | set price, invoice, payment event, verify, confirm release, fail/retry delivery, random transition, random event | everything delivered was verified + authorized + correctly ordered | 22 |
 | `NoReleaseMachine` | the same rule set **minus** confirm release | zero authorizations, zero delivered Deals, zero delivery requests | 23 |
-| `LastActivityMachine` | record email, apply open/click/reply event, record call, accept transition, perform audited Operator action — each writing exactly one source timestamp, including out-of-order values | `last_activity_at` equals the maximum source timestamp, unset when none exist | 43 |
+| `LastActivityMachine` | record email, apply open/click/reply event, record call, accept transition, perform audited Operator action — each writing exactly one source timestamp, including out-of-order values — plus **attempt a rejected action** (illegal transition, Viewer-unauthorized action, out-of-range edit) | `last_activity_at` is non-null and equals the maximum over *applied* source timestamps; a rejected attempt grows `audit_entries` without advancing the column | 43 |
 | `VerificationConsistencyMachine` | the `ReleaseSafetyMachine` rule set **plus** write-state-only and write-timestamp-only, via ORM and raw SQL | the flag reads as set exactly when `payment_verified_at` is set; every Deal at Payment_Verified or Released has it set | 44 |
 | `StateVersionMachine` | transition requests carrying correct, stale, future, and absent `state_version` values; concurrent submissions of the same version | `state_version` equals the accepted-transition count; a mismatched version is always rejected and applies nothing | 45 |
 
@@ -2145,7 +2428,7 @@ def test_property_20_suggested_price_matches_formula_and_bounds(
 
 `VerificationConsistencyMachine` is likewise separate from `ReleaseSafetyMachine` rather than an extra invariant on it, because its two extra rules deliberately attempt writes the ordinary money path never issues — setting the state without the timestamp and the timestamp without the state — and those rules would falsify nothing if the machine's only invariant were the delivery-ordering one.
 
-`AuditCompletenessMachine` and `PriceProvenanceMachine` (Properties 33 and 21) reuse the `ReleaseSafetyMachine` rule set with different invariants, so they are implemented as invariant mixins rather than separate machines.
+`AuditCompletenessMachine`, `PriceProvenanceMachine`, and `PaymentRecordMachine` (Properties 33, 21, and 46) reuse the `ReleaseSafetyMachine` rule set with different invariants, so they are implemented as invariant mixins rather than separate machines. `PaymentRecordMachine` adds two rules of its own — `deliver_payment_event_at_arbitrary_state` and `deliver_payment_event_without_invoice` — because the ordinary money path never reaches a payment event from a state that cannot transition to `Paid_Pending_Verification`, nor for a Deal with no invoice, and those are exactly the two anomaly cases Requirements 8.21 and 8.23 govern. Without them the exactly-one-payment-record invariant would pass on a design that discards the payment whenever the transition is refused, which is the defect it exists to catch.
 
 **Generator design notes.**
 
@@ -2157,7 +2440,7 @@ def test_property_20_suggested_price_matches_formula_and_bounds(
 
 ### 7.3 Unit and example-based tests
 
-Kept deliberately narrow, since the property tests cover input variation. Per the prework classification, example and edge-case tests cover: the unauthenticated request to each screen redirecting to sign-in with the requested screen retained, asserting that no Lead or Deal query is issued (1.1); a successful sign-in establishing the session and resetting the failure count, in two cases — a retained screen the Operator's role permits, and one it does not, which lands on the Lead_List_View (1.2); the Viewer default role (1.5); session boundary behavior at 11:59:59 / 12:00:00 and 29:59 / 30:00 (1.4, 1.12); sign-out timing (1.13); the list row's enumerated field set including the most-recent-activity timestamp, asserting only that the row renders the stored value since the timestamp's correctness is Property 43's invariant (2.1); the zero-match list state (2.13); the list retrieval-failure state (2.15); the release status rendering as Locked while no Release_Authorization exists and as Released with the Deal delivered_date once one does, the display counterpart of Property 22 (3.2, 3.10); the activity history with entries drawn from all four sources and more than 50 entries in total, asserting the union, most-recent-first ordering, and pagination at 50 (3.3); a submitted call record storing the assigned attempt_number, submission timestamp, outcome, and notes and appearing in the activity history (3.5); a call record rejected for an outcome outside answered/busy/no-answer or for notes over 2,000 characters, with the Operator-entered values retained (3.9); the not-found Deal Room (3.7); the audited field-edit path with an accepted and a rejected value for each contact field and each pricing input, and the recomputed Suggested_Price after an accepted pricing-input edit (3.6, 3.8, 3.11, 3.12); a confirmed send against a New_Lead requesting the Contacted Pipeline_State (5.1); the confirmation step displaying the recipient contact_email, company_name, and subject, in two cases — confirm, and cancel asserting zero adapter invocations and no email row (5.2); a bounce against the Lead's current contact_email blocking every subsequent email action, setting the Manual_Review_Flag, and displaying the recorded reason and timestamp, plus a second example for the address scoping, where correcting contact_email clears the block, the zero-email invariant itself being Property 13 (5.6); the 100/101 bulk selection boundary (5.14); the Site Ready for Review indicator across all four review_state values, present only for Ready_For_Review and distinct from Property 7's action-and-badge invariant (6.2); the in-dashboard notification list under a frozen clock with notifications inside and outside the trailing 30-day window, asserting most-recent-first ordering and the per-channel delivery outcomes (9.9); enabling Slack without a webhook (9.12); the empty analytics range (10.14); and 24-month audit retention under a frozen clock (11.8).
+Kept deliberately narrow, since the property tests cover input variation. Per the prework classification, example and edge-case tests cover: the unauthenticated request to each screen redirecting to sign-in with the requested screen retained, asserting that no Lead or Deal query is issued (1.1); a successful sign-in establishing the session and resetting the failure count, in two cases — a retained screen the Operator's role permits, and one it does not, which lands on the Lead_List_View (1.2); the Viewer default role (1.5); session boundary behavior at 11:59:59 / 12:00:00 and 29:59 / 30:00 (1.4, 1.12); sign-out timing (1.13); the list row's enumerated field set including the most-recent-activity timestamp, asserting only that the row renders the stored value since the timestamp's correctness is Property 43's invariant (2.1); the zero-match list state (2.13); the list retrieval-failure state (2.15); the release status rendering as Locked while no Release_Authorization exists and as Released with the Deal delivered_date once one does, the display counterpart of Property 22 (3.2, 3.10); the activity history with entries drawn from all four sources and more than 50 entries in total, asserting the union, most-recent-first ordering, and pagination at 50 (3.3); a submitted call record storing the assigned attempt_number, submission timestamp, outcome, and notes and appearing in the activity history (3.5); a call record rejected for an outcome outside answered/busy/no-answer or for notes over 2,000 characters, with the Operator-entered values retained (3.9); the not-found Deal Room (3.7); the audited field-edit path with an accepted and a rejected value for each contact field and each pricing input, and the recomputed Suggested_Price after an accepted pricing-input edit (3.6, 3.8, 3.11, 3.12); a confirmed send against a New_Lead requesting the Contacted Pipeline_State (5.1); the confirmation step displaying the recipient contact_email, company_name, and subject, in two cases — confirm, and cancel asserting zero adapter invocations and no email row (5.2); a bounce against the Lead's current contact_email blocking every subsequent email action, setting the Manual_Review_Flag, and displaying the recorded reason and timestamp, plus a second example for the address scoping, where correcting contact_email clears the block, the zero-email invariant itself being Property 13 (5.6); an unsubscribe event for a Lead with **no email rows**, asserting that the Lead's unsubscribed_at is set and that the unsubscribed field is set on no email row at all, which is the single behavior that criterion admits (5.23); the 100/101 bulk selection boundary (5.14); the Site Ready for Review indicator across all four review_state values, present only for Ready_For_Review and distinct from Property 7's action-and-badge invariant (6.2); the in-dashboard notification list under a frozen clock with notifications inside and outside the trailing 30-day window, asserting most-recent-first ordering and the per-channel delivery outcomes (9.9); enabling Slack without a webhook (9.12); the empty analytics range (10.14); and 24-month audit retention under a frozen clock (11.8).
 
 One case is a concurrency example rather than a plain one: two simultaneous call-record submissions for the same Lead must not receive the same attempt_number (3.5), so it runs on separate connections like the concurrency properties of §7.2.
 
@@ -2168,7 +2451,7 @@ Where behavior does not vary meaningfully with input, 1–3 examples are used in
 - Slack webhook delivery to the recorded target and email delivery to the registered address (Requirements 9.5, 9.6) — mocked transport, asserting the destination.
 - The notification 60-second bound (Requirement 9.13) under a controlled clock: one event per event type, asserting that generation and the first delivery attempt on each enabled channel both complete inside the bound and that a subsequent retry is permitted to land outside it.
 - Reported site-generation completion (Requirement 6.1), for both an initial generation and a regeneration, asserting the review_state set to Ready_For_Review, the recorded generated_at, preview_url, and page_count, and the site-ready notification inside the 60-second bound — under the same controlled clock as the 9.13 timing test.
-- The money path (Requirement 8.3): a payment event for a Deal holding an invoice record, asserting the recorded amount and paid_date, the set payment_received field, the requested Paid_Pending_Verification Pipeline_State, and the payment notification inside the 60-second bound.
+- The money path's happy case (Requirement 8.3): a payment event for a Deal at `Invoiced` holding an invoice record, asserting the recorded amount and paid_date, the set payment_received field, the requested Paid_Pending_Verification Pipeline_State, an unset Payment_Anomaly_Flag, and the payment notification inside the 60-second bound. This is the positive path only; the unconditional-recording and anomaly halves of Requirement 8.3 vary meaningfully with Pipeline_State and invoice presence and are therefore Property 46's, not this test's.
 - Selecting a Lead row opens the Deal_Room_View for that Lead (Requirement 2.9) — a Playwright navigation assertion.
 - Stub-mode end-to-end: a full run from Lead creation through contact, quote, invoice, payment event, verification, release, and delivery, asserting the terminal state and the complete audit trail. This is the demo path and the smoke test that the dashboard is independently runnable without the bot. The run also asserts the positive-path field values that the release and outreach invariants do not pin down: exactly one email row carrying lead_id, subject, body, outreach_request_id, and sent_at once the adapter returns success (Requirement 5.1), and exactly one Release_Authorization carrying deal_id, operator_id, and millisecond-precision authorized_at together with exactly one delivery request (Requirement 8.8), where Properties 22, 23, and 24 cover the invariants surrounding that step.
 - Inbound webhook endpoint behavior for each of the seven event types against a live database.
@@ -2201,8 +2484,25 @@ The structural claims this design rests on are verified mechanically, because a 
 
 ### 7.7 Traceability
 
-Every acceptance criterion maps to at least one test, and CI enforces it. The mapping is maintained as a machine-checked table: each of the 45 property tests names its property in a `# Feature: deal-room-dashboard, Property N: …` comment, each property in this document lists its `Validates: Requirements X.Y` criteria, and a CI check asserts that the union of all validated criteria plus the criteria covered by the example, integration, and performance tiers equals the full set of acceptance criteria in `requirements.md`. A newly added criterion with no test therefore fails the build.
+Every acceptance criterion maps to at least one test, and CI enforces it. The mapping is maintained as a machine-checked table: each of the 46 property tests names its property in a `# Feature: deal-room-dashboard, Property N: …` comment, each property in this document lists its `Validates: Requirements X.Y` criteria, and a CI check asserts that the union of all validated criteria plus the criteria covered by the example, integration, and performance tiers equals the full set of acceptance criteria in `requirements.md`. A newly added criterion with no test therefore fails the build.
 
-The property tier does not reach every criterion on its own, and is not expected to. The criteria that no property's `Validates` bullet names — 1.1, 1.2, 2.1, 2.9, 3.2, 3.3, 3.5, 3.9, 3.10, 5.1, 5.2, 5.6, 6.1, 6.2, 8.3, 8.8, and 9.9 — are carried by the example, integration, and performance tiers, and §7.3, §7.4, and §7.5 name each of them explicitly for that reason. Several were already exercised by tests those sections describe; naming them is what makes the coverage legible to the check rather than only to a reader. For the union to be computable the check has to read both halves of it, so a non-property test declares its criteria the way a property test declares its property: a `# Covers: Requirements X.Y, X.Z` comment on the test function, which the CI check parses out of the example, integration, and performance suites exactly as it parses the `Validates` bullets out of this document. That annotation is load-bearing — without a declared mechanism for the non-property tiers the check can see only the property tier, and would report all seventeen of the criteria above as uncovered even though each has a test.
+The property tier does not reach every criterion on its own, and is not expected to. The criteria that no property's `Validates` bullet names — 1.1, 1.2, 2.1, 2.9, 3.2, 3.3, 3.5, 3.9, 3.10, 5.1, 5.2, 5.6, 5.23, 6.1, 6.2, 8.8, and 9.9 — are carried by the example, integration, and performance tiers, and §7.3, §7.4, and §7.5 name each of them explicitly for that reason. Requirement 8.3 has left that list: the unconditional-recording rule it now states varies with Pipeline_State and invoice presence, which makes it a property rather than an example, and Property 46 names it. Requirement 5.23 has joined it: a Lead with no email rows admits exactly one behavior — set the Lead-level opt-out, mark no email row — so it is an example, exercised alongside the Requirement 5.8 attribution cases in §7.3 and reached incidentally by Property 29's generator, whose datasets include such Leads. Several were already exercised by tests those sections describe; naming them is what makes the coverage legible to the check rather than only to a reader. For the union to be computable the check has to read both halves of it, so a non-property test declares its criteria the way a property test declares its property: a `# Covers: Requirements X.Y, X.Z` comment on the test function, which the CI check parses out of the example, integration, and performance suites exactly as it parses the `Validates` bullets out of this document. That annotation is load-bearing — without a declared mechanism for the non-property tiers the check can see only the property tier, and would report all seventeen of the criteria above as uncovered even though each has a test.
 
-That check is what pulled Properties 43, 44, and 45 into the suite: Requirements 13.14, 8.17–8.19, and 4.13 are stated invariants over stored data that no other tier can cover, so each needed its own universally quantified property rather than a share of an existing one. The other criteria stated since the previous revision are absorbed by properties already listed, whose `Validates` bullets name them: 4.12 by Property 8, 5.17 by Property 14, 7.12 by Property 20, 7.13 by Property 21, 8.20 by Property 23, 10.15 by Property 31, 13.13 by Property 9, and 13.2 and 13.15 by Property 41. Two are example-tier rather than property-tier: Requirement 9.13's scoping of the 60-second bound is an integration timing assertion (§7.4), and Requirements 3.11 and 3.12 are the pricing-input edit path, covered with the contact-field edit examples in §7.3.
+That check is what pulled Properties 43, 44, and 45 into the suite: Requirements 13.14, 8.17–8.19, and 4.13 are stated invariants over stored data that no other tier can cover, so each needed its own universally quantified property rather than a share of an existing one. The other criteria stated in that revision are absorbed by properties already listed, whose `Validates` bullets name them: 4.12 by Property 8, 5.17 by Property 14, 7.12 by Property 20, 7.13 by Property 21, 8.20 by Property 23, 10.15 by Property 31, 13.13 by Property 9, and 13.2 and 13.15 by Property 41. Two are example-tier rather than property-tier: Requirement 9.13's scoping of the 60-second bound is an integration timing assertion (§7.4), and Requirements 3.11 and 3.12 are the pricing-input edit path, covered with the contact-field edit examples in §7.3.
+
+**Coverage of the criteria added in the current revision.** Ten criteria are new, and the check has to see each of them.
+
+| New criterion | Tier | Where |
+|---|---|---|
+| 5.18 Clearance_Timestamp recorded and copied | property | Property 13 |
+| 5.19 stored email clearance precedes the unsubscribe | property | Property 13 |
+| 5.20 stored call clearance precedes the do-not-call | property | Property 13 |
+| 5.21 late unsubscribe records the row with the marker | property | Property 13 |
+| 5.22 late do-not-call records the row with the marker | property | Property 13 |
+| 5.23 unsubscribe for a Lead with no email rows | example | §7.3, reached incidentally by Property 29's generator |
+| 6.11 most recent Site_Project ordered by `created_at` | property | Property 20 |
+| 8.21 payment anomaly: payment retained, flag and reason set | property | Property 46 |
+| 8.22 anomaly surfaced in both views, cleared only by an audited action | property | Property 46, with the action type itself in Property 33 |
+| 8.23 an accepted payment event leaves exactly one payment record | property | Property 46 |
+
+Property 46 is the only wholly new property this revision adds, and Requirement 8.23 is why: it is a `FOR ALL` invariant over stored payment records that no existing property quantified over, because every money-path property before it presupposed the ordinary sequence in which the transition succeeds. Requirements 5.18–5.22 did **not** need a new property — they restate, correct, and strengthen the same compliance guarantee Property 13 already carried, so folding them into that property keeps one test per invariant rather than splitting one guarantee across five. Requirement 6.11 likewise attaches to Property 20, which already resolves `page_count` through the chain the ordering rule governs; the Requirement 6.2 indicator half of 6.11 is additionally exercised by Property 7's badge-and-control invariant and by the four-state indicator example in §7.3. Requirements 11.3 and 12.1 gained clauses rather than criteria — a new audited action type and a generalized Idempotency_Key — and are covered by the existing bullets of Properties 33 and 39, whose generators §7.2 extends accordingly.
