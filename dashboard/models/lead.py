@@ -80,55 +80,16 @@ from __future__ import annotations
 
 from django.db import models
 from django.db.models import Func
-from django.db.models.functions import Length, Now
-from django.db.models.lookups import GreaterThanOrEqual, LessThanOrEqual
+from django.db.models.functions import Now
 from django.utils.timezone import now as utc_now  # NOT `from django.utils import
 # timezone`: this model has a `timezone` field, and the class body would shadow
 # the module for every reference below it.
 
-
-def _length_between(field: str, low: int, high: int) -> models.Q:
-    """``char_length(field) BETWEEN low AND high`` as a constraint condition.
-
-    Spelled with an explicit :class:`~django.db.models.functions.Length` and
-    comparison lookups rather than the tidier ``Q(field__length__range=…)``,
-    because Django does not register ``Length`` as a lookup: making that spelling
-    work needs ``TextField.register_lookup(Length)``, a mutation of Django's
-    global field registry executed as an import side effect of a model module.
-    A local helper is the smaller thing. The rendered SQL is identical —
-    PostgreSQL resolves ``length()`` and the standard's ``char_length()`` to the
-    same function, so the constraint reads in ``pg_constraint`` exactly as §4.3
-    writes it.
-    """
-    return models.Q(
-        GreaterThanOrEqual(Length(field), low),
-        LessThanOrEqual(Length(field), high),
-    )
-
-
-def _length_at_most(field: str, high: int) -> models.Q:
-    """``char_length(field) <= high`` as a constraint condition."""
-    return models.Q(LessThanOrEqual(Length(field), high))
-
-
-def _unset_or(field: str, bound: models.Q) -> models.Q:
-    """``field IS NULL OR <bound>``.
-
-    Written out even though it is, today, redundant: PostgreSQL counts a ``CHECK``
-    that evaluates to NULL as satisfied, so ``length(industry) >= 1`` already
-    admits a NULL ``industry`` — by NULL propagation rather than by anything the
-    schema says. Two reasons to say it anyway.
-
-    First, it is what §4.3 writes, and writing it identically means the text in
-    ``pg_constraint`` can be diffed against the design instead of reasoned about.
-    Second, the redundancy is not stable: rewrite a bound into any non-propagating
-    form (``coalesce(length(x), 0) >= 1``, a ``CASE``, a comparison against a
-    function that is not strict) and the accidental permission disappears, turning
-    a nullable column into a required one with no line of the diff mentioning
-    nullability. Stating it makes each column's nullability a property of the
-    constraint rather than of the operator that happens to be in it.
-    """
-    return models.Q(**{f"{field}__isnull": True}) | bound
+# Task 2.2 moved these three, unchanged, into `dashboard.models.constraints`, so
+# that the nineteen tables of tasks 2.2 and 2.3 spell §4.3's bounds the way this
+# table already does instead of each re-deriving them. The rendered SQL is
+# identical, so migration 0003 is unaffected.
+from dashboard.models.constraints import length_at_most, length_between, unset_or
 
 
 class PipelineState(models.TextChoices):
@@ -504,7 +465,7 @@ class Lead(models.Model):
             # `operators.slack_webhook_url`: NULL is the single representation of
             # unset, so "has an industry" is one predicate rather than two.
             models.CheckConstraint(
-                condition=_length_between("company_name", 1, 200),
+                condition=length_between("company_name", 1, 200),
                 name="leads_company_name_length",
                 violation_error_message=(
                     "company_name is required and holds 1 to 200 characters "
@@ -512,7 +473,7 @@ class Lead(models.Model):
                 ),
             ),
             models.CheckConstraint(
-                condition=_unset_or("industry", _length_between("industry", 1, 200)),
+                condition=unset_or("industry", length_between("industry", 1, 200)),
                 name="leads_industry_length",
                 violation_error_message=(
                     "industry holds 1 to 200 characters or is unset "
@@ -520,8 +481,8 @@ class Lead(models.Model):
                 ),
             ),
             models.CheckConstraint(
-                condition=_unset_or(
-                    "contact_name", _length_between("contact_name", 1, 200)
+                condition=unset_or(
+                    "contact_name", length_between("contact_name", 1, 200)
                 ),
                 name="leads_contact_name_length",
                 violation_error_message=(
@@ -530,8 +491,8 @@ class Lead(models.Model):
                 ),
             ),
             models.CheckConstraint(
-                condition=_unset_or(
-                    "website_url", _length_at_most("website_url", 2048)
+                condition=unset_or(
+                    "website_url", length_at_most("website_url", 2048)
                 ),
                 name="leads_website_url_length",
                 violation_error_message=(
@@ -540,8 +501,8 @@ class Lead(models.Model):
                 ),
             ),
             models.CheckConstraint(
-                condition=_unset_or(
-                    "contact_email", _length_at_most("contact_email", 320)
+                condition=unset_or(
+                    "contact_email", length_at_most("contact_email", 320)
                 ),
                 name="leads_contact_email_length",
                 violation_error_message=(
@@ -550,8 +511,8 @@ class Lead(models.Model):
                 ),
             ),
             models.CheckConstraint(
-                condition=_unset_or(
-                    "contact_phone", _length_at_most("contact_phone", 32)
+                condition=unset_or(
+                    "contact_phone", length_at_most("contact_phone", 32)
                 ),
                 name="leads_contact_phone_length",
                 violation_error_message=(
@@ -614,7 +575,7 @@ class Lead(models.Model):
             ),
             # --- Requirement 13.6's Calling_Window input lengths ----------
             models.CheckConstraint(
-                condition=_unset_or("timezone", _length_at_most("timezone", 64)),
+                condition=unset_or("timezone", length_at_most("timezone", 64)),
                 name="leads_timezone_length",
                 violation_error_message=(
                     "timezone is an IANA name of at most 64 characters or is "
@@ -622,7 +583,7 @@ class Lead(models.Model):
                 ),
             ),
             models.CheckConstraint(
-                condition=_unset_or("region", _length_at_most("region", 200)),
+                condition=unset_or("region", length_at_most("region", 200)),
                 name="leads_region_length",
                 violation_error_message=(
                     "region holds at most 200 characters or is unset "
