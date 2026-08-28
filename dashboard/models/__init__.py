@@ -7,6 +7,20 @@ tables of Requirement 13.5. Everything is re-exported here so
 import-linter contracts target.
 """
 
+from dashboard.models.lead import (
+    Lead,
+    NormalizedEmail,
+    PhoneDigits,
+    PipelineState,
+)
 from dashboard.models.operator import Operator, OperatorManager, Role
 
-__all__ = ["Operator", "OperatorManager", "Role"]
+__all__ = [
+    "Lead",
+    "NormalizedEmail",
+    "Operator",
+    "OperatorManager",
+    "PhoneDigits",
+    "PipelineState",
+    "Role",
+]
