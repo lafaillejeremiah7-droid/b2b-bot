@@ -30,5 +30,6 @@ packages = [
     "dashboard.migrations",
     "dashboard.models",
     "dashboard.services",
+    "dashboard.tests",
     "dashboard.views",
 ]

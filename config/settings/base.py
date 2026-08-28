@@ -119,8 +119,21 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# AUTH_USER_MODEL = "dashboard.Operator" is set by task 1.3, before the first
-# migration that defines a model is generated.
+# --- The custom user model (Requirement 1.5) ------------------------------
+# Set here, in the scaffolding settings, because AUTH_USER_MODEL is a *swappable
+# dependency*: Django resolves it while building the first migration that
+# defines a model, and every later migration referencing the user model records
+# that resolution. Task 1.1's only migration creates the pg_trgm extension and
+# attaches no model state, so nothing has been resolved yet and this is the last
+# moment it can be set without a schema rebuild.
+#
+# dashboard.Operator is a lean AbstractBaseUser with a `role` field over
+# Viewer | Agent | Admin (design §3.2) and deliberately no PermissionsMixin —
+# the role field is the entire authorization model, so Django's groups and
+# per-model permissions cannot become a second authority that
+# `available_actions()` (task 4.2) does not see. django.contrib.admin, the usual
+# reason to need that machinery, is not installed.
+AUTH_USER_MODEL = "dashboard.Operator"
 
 # --- Time: the STORAGE timezone -------------------------------------------
 # Requirement 13.11: every stored timestamp is UTC at one-second precision or
