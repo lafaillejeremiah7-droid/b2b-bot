@@ -1,0 +1,3 @@
+Server-rendered templates for the eleven dashboard screens (design §2.3).
+Namespaced under dashboard/ so APP_DIRS template resolution cannot collide with
+another app. Populated by the view tasks; intentionally empty at task 1.1.
