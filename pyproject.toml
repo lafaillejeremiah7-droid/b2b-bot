@@ -54,6 +54,7 @@ packages = [
     "dashboard.qualification",
     "dashboard.outreach_strategy",
     "dashboard.deal_compliance",
+    "dashboard.site_production",
     "dashboard.adapter",
     "dashboard.migrations",
     "dashboard.models",

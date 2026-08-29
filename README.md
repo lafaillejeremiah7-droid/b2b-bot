@@ -110,6 +110,27 @@ Bot 4 prepares artifacts only. It cannot send outreach, bind a contract, create
 or send an invoice, record payment, change pipeline state, or deliver a website.
 Every returned `DealPacket` requires a fresh human approval before external use.
 
+## Company Bot 5 — Website Production
+
+`dashboard/site_production/` requires a complete Bot 4 packet plus an operator
+authorization confirming the contract and targeting that exact deal digest.
+Luna creates the conversion and luxury blueprint, Terra scores conversion
+clarity, luxury coherence, mobile usability, accessibility readiness, and
+evidence integrity independently, and Sol produces a bounded multi-file static
+website package only when every score is at least 4/5 with no violation or
+required change.
+
+The artifact contract requires a home page and stylesheet, safe relative paths,
+bounded file and total sizes, the approved company identity and primary CTA,
+and only operator-approved business claims. It rejects remote executable scripts,
+inline event handlers, `javascript:` URLs, fabricated guarantees, and numerical
+conversion promises. Conversion choices remain hypotheses until measured.
+
+Bot 5 can generate the website files, but it cannot publish, deploy, transfer,
+email, deliver, mark payment, or mutate pipeline state. Its only successful
+destination is a sealed `ProductionPacket` for Bot 6's independent QA and
+release gate.
+
 ## Local development
 
 PostgreSQL 16 is the only supported backend — the schema depends on partial
