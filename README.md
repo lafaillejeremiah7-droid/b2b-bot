@@ -25,6 +25,37 @@ dashboard/              the application
 so the four layering rules of design §3.0.1 can be expressed as import-linter
 contracts (task 1.4). Do not collapse them into single files.
 
+## Company Bot 1 — Discovery
+
+`dashboard/discovery/` contains the first company bot as a pure, authority-
+bounded pipeline. Every successful discovery action runs in this exact order:
+
+1. **Luna** (`gpt-5.6-luna`) extracts candidate Lead claims quickly from
+   explicitly supplied, untrusted public-source snapshots.
+2. **Terra** (`gpt-5.6-terra`) independently verifies every Luna claim and
+   records contradictions.
+3. **Sol** (`gpt-5.6-sol`) adjudicates the verified record and returns
+   `ACCEPTED`, `REVIEW_REQUIRED`, or `REJECTED`.
+
+Every stage has an exact runtime schema and is chained to its parent by a
+canonical SHA-256 digest. Unknown fields, changed model identities, malformed
+outputs, unverified citations, provider failures, and idempotency-key conflicts
+fail closed. Source text remains separate from the trusted directive so a future
+provider adapter can preserve the system/user prompt boundary.
+
+The bot has discovery authority only. It cannot import Django models or the
+dashboard service/adapter packages, send outreach, alter pipeline state, create
+deals, issue invoices, move money, or release a website. Its accepted result is
+a sealed `DiscoveryPacket`, not a database write. Lead persistence remains
+deliberately disabled until task 6.2 supplies the dashboard-owned transaction
+that creates both the `New_Lead` genesis history and matching
+`last_activity_at`; bypassing that seam would create corrupt pipeline history.
+
+Model-provider clients are injected through `StructuredModelPort`. The port
+contract requires the fixed directive to be sent as trusted system/developer
+instructions and source snapshots as untrusted user/tool data. No live provider
+or credentials are embedded in this repository.
+
 ## Local development
 
 PostgreSQL 16 is the only supported backend — the schema depends on partial
