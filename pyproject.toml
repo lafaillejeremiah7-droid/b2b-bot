@@ -50,6 +50,7 @@ packages = [
     "config",
     "config.settings",
     "dashboard",
+    "dashboard.discovery",
     "dashboard.adapter",
     "dashboard.migrations",
     "dashboard.models",
