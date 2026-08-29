@@ -131,6 +131,26 @@ email, deliver, mark payment, or mutate pipeline state. Its only successful
 destination is a sealed `ProductionPacket` for Bot 6's independent QA and
 release gate.
 
+## Company Bot 6 — Quality Assurance & Release Gate
+
+`dashboard/release_quality/` accepts only a complete, digest-chained Bot 5
+packet whose build outcome is `READY_FOR_QA`. Luna inventories functional,
+responsive, accessibility, content, security, and evidence-integrity findings
+against immutable file digests. Terra independently verifies every finding and
+scores all six dimensions. Sol applies deterministic gates and returns
+`APPROVED_FOR_HUMAN_RELEASE`, `REWORK_REQUIRED`, or `REJECTED`.
+
+Approval requires every score to be at least 4/5, no confirmed finding, and no
+required change. A confirmed blocking security or evidence-integrity finding is
+rejected; other failures require rework. Exact schemas, content-addressed stage
+handoffs, fixed model identities, and idempotency claims fail closed.
+
+Bot 6 is a release **recommendation** gate, not a deployment actor. It cannot
+edit Bot 5 files, publish, deploy, contact a prospect, record or verify payment,
+create a release authorization, deliver a website, or mutate pipeline state.
+Every outcome permanently requires a human operator to make the final release
+decision through the dashboard's payment and release safeguards.
+
 ## Local development
 
 PostgreSQL 16 is the only supported backend — the schema depends on partial
