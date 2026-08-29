@@ -92,6 +92,24 @@ price, change pipeline state, create a Deal or invoice, move money, or authorize
 delivery. A future dashboard-owned controller must obtain human approval before
 submitting any strategy to an adapter.
 
+## Company Bot 4 — Deal & Compliance
+
+`dashboard/deal_compliance/` accepts only a fully audited Bot 3 draft plus an
+operator approval whose digest matches that exact draft. Luna extracts deal
+facts from an untrusted prospect event, Terra audits every fact and compliance
+condition, and Sol may recommend no action, human review, a response, quote,
+contract preparation, or invoice preparation.
+
+Suggested prices are explicitly heuristic. An agreed price can only be copied
+unchanged from a $550–$1,000 operator authorization. Contract or invoice
+preparation additionally requires verified prospect acceptance. Email or call
+opt-outs force `NO_ACTION`, and any dollar amount in a draft must match an
+authorized suggested or agreed price.
+
+Bot 4 prepares artifacts only. It cannot send outreach, bind a contract, create
+or send an invoice, record payment, change pipeline state, or deliver a website.
+Every returned `DealPacket` requires a fresh human approval before external use.
+
 ## Local development
 
 PostgreSQL 16 is the only supported backend — the schema depends on partial
