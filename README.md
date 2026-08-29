@@ -56,6 +56,23 @@ contract requires the fixed directive to be sent as trusted system/developer
 instructions and source snapshots as untrusted user/tool data. No live provider
 or credentials are embedded in this repository.
 
+## Company Bot 2 — Qualification Intelligence
+
+`dashboard/qualification/` accepts only a complete, `ACCEPTED` Bot 1 packet and
+runs a second Luna → Terra → Sol chain. Luna extracts opportunity evidence,
+Terra independently audits every claim, and Sol applies deterministic gates to
+return `QUALIFIED`, `MANUAL_REVIEW`, or `REJECTED`.
+
+The five 1–5 scores are explicitly bounded heuristics, never probabilities.
+`QUALIFIED` requires a score total of at least 18, offer fit of at least 4,
+ability to pay and contactability of at least 3, evidence quality of at least 4,
+and no contradicted evidence or unresolved conflict. Every exposed profile field
+must reproduce a Terra-verified Luna claim and cite its content digest.
+
+Bot 2 cannot contact anyone, select or promise a price, write a Lead or Pipeline
+State, create a Deal or invoice, move money, or authorize delivery. Its only
+output is a sealed `QualificationPacket` for the future outreach-strategy bot.
+
 ## Local development
 
 PostgreSQL 16 is the only supported backend — the schema depends on partial

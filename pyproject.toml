@@ -51,6 +51,7 @@ packages = [
     "config.settings",
     "dashboard",
     "dashboard.discovery",
+    "dashboard.qualification",
     "dashboard.adapter",
     "dashboard.migrations",
     "dashboard.models",
