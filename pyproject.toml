@@ -52,6 +52,7 @@ packages = [
     "dashboard",
     "dashboard.discovery",
     "dashboard.qualification",
+    "dashboard.outreach_strategy",
     "dashboard.adapter",
     "dashboard.migrations",
     "dashboard.models",

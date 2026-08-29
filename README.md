@@ -73,6 +73,25 @@ Bot 2 cannot contact anyone, select or promise a price, write a Lead or Pipeline
 State, create a Deal or invoice, move money, or authorize delivery. Its only
 output is a sealed `QualificationPacket` for the future outreach-strategy bot.
 
+## Company Bot 3 — Outreach Strategy
+
+`dashboard/outreach_strategy/` accepts only matching, fully chained Bot 1 and
+`QUALIFIED` Bot 2 packets. Luna drafts a personalized email or call strategy,
+Terra audits every factual message claim against the verified upstream fields,
+and Sol may return `READY_FOR_HUMAN_APPROVAL` only when the audit is complete
+and clean. The exact Luna draft is content-addressed, so Sol cannot silently
+rewrite it after Terra's review.
+
+The runtime contract rejects unsupported profile fields, prices, numerical
+probabilities, guarantees, duplicate or incomplete claim audits, malformed
+follow-up sequences, upstream packet mismatches, and model identity changes.
+Every successful packet permanently carries `human_approval_required=True`.
+
+Bot 3 cannot send or schedule outreach, contact a person, select or promise a
+price, change pipeline state, create a Deal or invoice, move money, or authorize
+delivery. A future dashboard-owned controller must obtain human approval before
+submitting any strategy to an adapter.
+
 ## Local development
 
 PostgreSQL 16 is the only supported backend — the schema depends on partial
