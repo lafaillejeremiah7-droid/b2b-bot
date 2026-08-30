@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from dashboard.services.outreach_templates import professional_signature
+
 
 class ReplyCategory(StrEnum):
     INTERESTED = "interested"
@@ -23,14 +25,17 @@ class CloserDecision:
     auto_send_allowed: bool
     draft_reply: str
     reason: str
+    lead_id: str = ""
+    thread_id: str = ""
+    suppression_required: bool = False
 
 
 class Closer:
-    """Employee #7: classify inbound replies and decide the safest next action.
+    """Employee #7: classify replies and produce a fail-closed next action.
 
-    The first production version is deliberately conservative. It never auto-sends
-    substantive sales replies. Interested prospects and questions are escalated to
-    the owner with a ready-to-review draft. Opt-outs stop follow-ups immediately.
+    The Closer never auto-sends substantive sales replies. It carries lead/thread
+    identifiers forward so the persistence layer can suppress follow-ups on the
+    exact prospect rather than treating stop_followups as an in-memory suggestion.
     """
 
     name = "Closer"
@@ -95,9 +100,18 @@ class Closer:
             return ReplyCategory.QUESTION, 0.78
         return ReplyCategory.UNKNOWN, 0.35
 
-    def run(self, reply_text: str, first_name: str = "there") -> CloserDecision:
+    def run(
+        self,
+        reply_text: str,
+        first_name: str = "there",
+        *,
+        lead_id: str = "",
+        thread_id: str = "",
+    ) -> CloserDecision:
         category, confidence = self.classify(reply_text)
         name = (first_name or "there").strip().split()[0]
+        signature = professional_signature()
+        context = {"lead_id": lead_id, "thread_id": thread_id}
 
         if category is ReplyCategory.UNSUBSCRIBE:
             return CloserDecision(
@@ -107,7 +121,9 @@ class Closer:
                 escalate_to_owner=False,
                 auto_send_allowed=False,
                 draft_reply="",
-                reason="Explicit opt-out: suppress all future outreach immediately.",
+                reason="Explicit opt-out: persist suppression and stop all future outreach.",
+                suppression_required=True,
+                **context,
             )
 
         if category is ReplyCategory.NOT_INTERESTED:
@@ -118,63 +134,77 @@ class Closer:
                 escalate_to_owner=False,
                 auto_send_allowed=False,
                 draft_reply="",
-                reason="Negative reply: stop the sequence and close the outreach loop.",
+                reason="Negative reply: close the sequence and suppress automated follow-ups.",
+                suppression_required=True,
+                **context,
             )
 
         if category is ReplyCategory.MEETING_REQUEST:
+            draft = (
+                f"Hi {name},\n\nAbsolutely — happy to set up a quick call. "
+                "I can send over available times once scheduling is connected.\n\n"
+                f"{signature}"
+            )
             return CloserDecision(
                 category=category,
                 confidence=confidence,
                 stop_followups=True,
                 escalate_to_owner=True,
                 auto_send_allowed=False,
-                draft_reply=(
-                    f"Hi {name},\n\nAbsolutely — happy to set up a quick call. "
-                    "I can send over available times once scheduling is connected.\n\nBest,\nB2B Bot"
-                ),
+                draft_reply=draft,
                 reason="High-intent prospect. Escalate until calendar booking is connected.",
+                **context,
             )
 
         if category is ReplyCategory.INTERESTED:
+            draft = (
+                f"Hi {name},\n\nThanks for getting back to me. I’d be happy to share more "
+                "and see whether this is a fit for your business. What would be most useful for you to know first?\n\n"
+                f"{signature}"
+            )
             return CloserDecision(
                 category=category,
                 confidence=confidence,
                 stop_followups=True,
                 escalate_to_owner=True,
                 auto_send_allowed=False,
-                draft_reply=(
-                    f"Hi {name},\n\nThanks for getting back to me. I’d be happy to share more "
-                    "and see whether this is a fit for your business. What would be most useful for you to know first?\n\nBest,\nB2B Bot"
-                ),
-                reason="Positive buying signal. Stop automated follow-ups and surface to the owner.",
+                draft_reply=draft,
+                reason="Positive buying signal. Pause automation and surface the exact thread to the owner.",
+                **context,
             )
 
         if category is ReplyCategory.QUESTION:
+            draft = (
+                f"Hi {name},\n\nThanks for the question. I want to make sure I give you an accurate answer, "
+                "so I’m checking the details before replying.\n\n"
+                f"{signature}"
+            )
             return CloserDecision(
                 category=category,
                 confidence=confidence,
                 stop_followups=True,
                 escalate_to_owner=True,
                 auto_send_allowed=False,
-                draft_reply=(
-                    f"Hi {name},\n\nThanks for the question. I want to make sure I give you an accurate answer, "
-                    "so I’m checking the details before replying.\n\nBest,\nB2B Bot"
-                ),
+                draft_reply=draft,
                 reason="Question requires grounded account/service context before a substantive reply.",
+                **context,
             )
 
         if category is ReplyCategory.OBJECTION:
+            draft = (
+                f"Hi {name},\n\nThat makes sense. I don’t want to push something that isn’t useful. "
+                "If you’re open to it, I can clarify the scope and see whether there’s a simpler fit.\n\n"
+                f"{signature}"
+            )
             return CloserDecision(
                 category=category,
                 confidence=confidence,
                 stop_followups=True,
                 escalate_to_owner=True,
                 auto_send_allowed=False,
-                draft_reply=(
-                    f"Hi {name},\n\nThat makes sense. I don’t want to push something that isn’t useful. "
-                    "If you’re open to it, I can clarify the scope and see whether there’s a simpler fit.\n\nBest,\nB2B Bot"
-                ),
+                draft_reply=draft,
                 reason="Objection needs owner-approved pricing/scope context before negotiation.",
+                **context,
             )
 
         return CloserDecision(
@@ -185,4 +215,5 @@ class Closer:
             auto_send_allowed=False,
             draft_reply="",
             reason="Ambiguous reply: do not guess. Pause outreach and request owner review.",
+            **context,
         )
