@@ -49,6 +49,8 @@ DATABASES = {"default": {
 }}
 
 AUTH_USER_MODEL = "dashboard.Operator"
+LOGIN_URL = "/admin/login/"
+LOGIN_REDIRECT_URL = "/dashboard/"
 USE_TZ = True
 TIME_ZONE = "UTC"
 REPORTING_TIMEZONE = os.getenv("REPORTING_TIMEZONE", "America/New_York")
