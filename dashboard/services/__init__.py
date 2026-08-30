@@ -1,3 +1,4 @@
+from .boss import Boss, BossAction, BossDecision, BossSnapshot, EmployeeKPI
 from .closer import Closer, CloserDecision, ReplyCategory
 from .company import CompanyDeliveryResult, CompanyReplyResult, SevenEmployeeCompany
 from .discovery_handoff import (
@@ -17,11 +18,16 @@ from .six_employee_pipeline import Lead, PipelineResult, SixEmployeePipeline
 from .suppression import DjangoSuppressionStore, SuppressionStore
 
 __all__ = [
+    "Boss",
+    "BossAction",
+    "BossDecision",
+    "BossSnapshot",
     "Closer",
     "CloserDecision",
     "CompanyDeliveryResult",
     "CompanyReplyResult",
     "DjangoSuppressionStore",
+    "EmployeeKPI",
     "Lead",
     "OutreachClearance",
     "PipelineResult",
