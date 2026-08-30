@@ -65,13 +65,14 @@ class Personalizer:
 
     def run(self, lead: Lead) -> dict[str, Any]:
         first_name = (lead.name or "there").split()[0]
-        subject = "B2B Bot: six-employee pipeline test"
+        subject = "B2B Bot: outbound pipeline test"
         body = (
             f"Hi {first_name},\n\n"
-            "This is an internal test from the B2B Bot company. All six bot employees "
+            "This is an internal test from the B2B Bot company. The six outbound employees "
             "processed this message before the send step.\n\n"
-            "Pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n\n"
-            "No sales outreach was performed; this message was sent only to verify the connected Gmail workflow.\n\n"
+            "Outbound pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n"
+            "Employee #7, Closer, activates only after a prospect replies.\n\n"
+            "No sales outreach was performed; this message was prepared only to verify the workflow.\n\n"
             "- B2B Bot"
         )
         lead.notes["subject"] = subject
@@ -104,13 +105,18 @@ class Manager:
         return {
             "employee": self.name,
             "status": "complete",
-            "output": "Pipeline passed all six employee stages." if passed else "Pipeline requires review.",
+            "output": "Outbound pipeline passed all six pre-send stages." if passed else "Pipeline requires review.",
             "pipeline_passed": passed,
         }
 
 
 class SixEmployeePipeline:
-    """Minimal orchestration layer. External delivery is intentionally handled by an adapter."""
+    """Outbound team within the seven-employee company.
+
+    Employees 1-6 prepare and approve outreach. Employee #7 (Closer) lives in
+    ``dashboard.services.closer`` and is invoked only when an inbound reply exists.
+    External delivery remains the responsibility of an adapter.
+    """
 
     def run(self, lead: Lead) -> PipelineResult:
         stages: list[dict[str, Any]] = []
