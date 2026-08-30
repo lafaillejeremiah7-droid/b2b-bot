@@ -3,9 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from django.conf import settings
+from dashboard.services.outreach_templates import (
+    OutreachContext,
+    professional_signature,
+    render_google_maps_outreach,
+)
 
-from dashboard.services.outreach_templates import OutreachContext, render_google_maps_outreach
+STATUS_COMPLETE = "complete"
+STATUS_BLOCKED = "blocked"
+STATUS_FAILED = "failed"
+STATUS_SKIPPED = "skipped"
 
 
 @dataclass
@@ -27,136 +34,224 @@ class PipelineResult:
     stages: list[dict[str, Any]]
 
 
-def outbound_signature() -> str:
-    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Jeremiah Lafaille").strip()
-    phone = getattr(settings, "OUTREACH_PHONE", "").strip()
-    email = getattr(settings, "OUTREACH_EMAIL", "").strip()
-    lines = ["Best,", sender, "Website Design & Digital Presence"]
-    if phone:
-        lines.append(f"Phone Number: {phone}")
-    if email:
-        lines.append(f"Email: {email}")
-    return "\n".join(lines)
+def _stage(employee: str, status: str, output: str, **extra: Any) -> dict[str, Any]:
+    return {"employee": employee, "status": status, "output": output, **extra}
+
+
+def _skip(employee: str, reason: str) -> dict[str, Any]:
+    return _stage(employee, STATUS_SKIPPED, reason)
 
 
 class Scout:
     name = "Scout"
 
     def run(self, lead: Lead) -> dict[str, Any]:
-        return {
-            "employee": self.name,
-            "status": "complete",
-            "output": f"Selected {lead.email} from {lead.source} for processing.",
-        }
+        if lead.source == "internal_gmail_test":
+            lead.notes["scout_verified"] = True
+            return _stage(self.name, STATUS_COMPLETE, "Selected approved internal Gmail test lead.")
+
+        if lead.source != "google_maps":
+            lead.notes["scout_verified"] = False
+            return _stage(self.name, STATUS_BLOCKED, "Unsupported lead source; Scout requires Google Maps discovery evidence.")
+
+        discovery_verified = bool(lead.notes.get("discovery_verified"))
+        place_reference = str(
+            lead.notes.get("google_maps_place_id")
+            or lead.notes.get("google_maps_url")
+            or ""
+        ).strip()
+        verified = discovery_verified and bool(place_reference) and bool(lead.company or lead.name)
+        lead.notes["scout_verified"] = verified
+        if not verified:
+            return _stage(
+                self.name,
+                STATUS_BLOCKED,
+                "Google Maps lead is missing verified discovery evidence or a Maps place reference.",
+            )
+        return _stage(self.name, STATUS_COMPLETE, "Verified Google Maps discovery handoff.")
 
 
 class Researcher:
     name = "Researcher"
 
     def run(self, lead: Lead) -> dict[str, Any]:
-        internal_test = lead.source == "internal_gmail_test"
-        lead.notes["internal_test"] = internal_test
-        return {
-            "employee": self.name,
-            "status": "complete",
-            "output": "Marked recipient as an internal test contact." if internal_test else "Research record created.",
-        }
+        if not lead.notes.get("scout_verified"):
+            lead.notes["research_verified"] = False
+            return _stage(self.name, STATUS_BLOCKED, "Scout handoff was not verified.")
+
+        if lead.source == "internal_gmail_test":
+            lead.notes["internal_test"] = True
+            lead.notes["research_verified"] = True
+            return _stage(self.name, STATUS_COMPLETE, "Marked recipient as an internal test contact.")
+
+        if lead.source != "google_maps":
+            lead.notes["research_verified"] = False
+            return _stage(self.name, STATUS_BLOCKED, "Researcher only accepts verified Google Maps or internal-test leads.")
+
+        verified_no_website = bool(lead.notes.get("verified_no_website"))
+        website_verified = bool(lead.notes.get("website_verified"))
+        observations = tuple(
+            item.strip()
+            for item in lead.notes.get("website_observations", ())
+            if isinstance(item, str) and item.strip()
+        )
+
+        if verified_no_website:
+            valid_site_evidence = not bool(lead.website)
+        else:
+            valid_site_evidence = bool(lead.website) and website_verified and len(observations) >= 2
+
+        contact_verified = bool(lead.email and lead.notes.get("contact_verified", False))
+        research_verified = valid_site_evidence and contact_verified
+        lead.notes["website_observations"] = list(observations)
+        lead.notes["research_verified"] = research_verified
+
+        if not research_verified:
+            return _stage(
+                self.name,
+                STATUS_BLOCKED,
+                "Research evidence is incomplete: verify contact plus website status and two observations when a website exists.",
+            )
+        return _stage(self.name, STATUS_COMPLETE, "Verified contact and website-status research evidence.")
 
 
 class Qualifier:
     name = "Qualifier"
 
     def run(self, lead: Lead) -> dict[str, Any]:
-        qualified = bool(lead.email) and (lead.notes.get("internal_test") is True)
+        if not lead.notes.get("research_verified"):
+            lead.notes["qualified"] = False
+            return _stage(self.name, STATUS_BLOCKED, "Researcher handoff is not verified.")
+
+        if lead.notes.get("suppressed") or lead.notes.get("opted_out"):
+            lead.notes["qualified"] = False
+            return _stage(self.name, STATUS_BLOCKED, "Lead is suppressed or opted out.")
+
+        if lead.source == "internal_gmail_test":
+            lead.notes["qualified"] = bool(lead.email)
+            return _stage(self.name, STATUS_COMPLETE, "Approved safe internal self-test.")
+
+        evidence_score = 0
+        evidence_score += int(bool(lead.email))
+        evidence_score += int(bool(lead.company or lead.name))
+        evidence_score += int(bool(lead.notes.get("research_verified")))
+        evidence_score += int(bool(lead.notes.get("verified_no_website") or lead.website))
+        qualified = evidence_score == 4
+        lead.notes["qualification_score"] = evidence_score
         lead.notes["qualified"] = qualified
-        return {
-            "employee": self.name,
-            "status": "complete",
-            "output": "Approved safe self-test." if qualified else "Rejected: this minimal pipeline only permits internal tests.",
-        }
+
+        if not qualified:
+            return _stage(self.name, STATUS_BLOCKED, f"Lead failed deterministic qualification ({evidence_score}/4).")
+        return _stage(self.name, STATUS_COMPLETE, "Lead passed deterministic qualification (4/4).")
 
 
 class Personalizer:
     name = "Personalizer"
 
     def run(self, lead: Lead) -> dict[str, Any]:
-        first_name = (lead.name or "there").split()[0]
+        if not lead.notes.get("qualified"):
+            return _stage(self.name, STATUS_SKIPPED, "Qualifier did not approve this lead.")
 
-        if lead.source == "google_maps":
-            context = OutreachContext(
-                business_name=lead.company or lead.name,
-                first_name=first_name,
-                source="google_maps",
-                website=lead.website,
-                verified_no_website=bool(lead.notes.get("verified_no_website", False)),
-                observations=tuple(lead.notes.get("website_observations", ())),
-                preview_url=str(lead.notes.get("preview_url", "")),
-            )
-            subject, body = render_google_maps_outreach(context)
-            output = "Created Google Maps outreach using the verified website-status template."
-        else:
-            subject = "B2B Bot: outbound pipeline test"
-            body = (
-                f"Hi {first_name},\n\n"
-                "This is an internal test from the B2B Bot company. The six outbound employees "
-                "processed this message before the send step.\n\n"
-                "Outbound pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n"
-                "Employee #7, Closer, activates only after a prospect replies.\n\n"
-                "No sales outreach was performed; this message was prepared only to verify the workflow.\n\n"
-                f"{outbound_signature()}"
-            )
-            output = "Created personalized internal test email."
+        first_name = (lead.name or "there").split()[0]
+        try:
+            if lead.source == "google_maps":
+                context = OutreachContext(
+                    business_name=lead.company or lead.name,
+                    first_name=first_name,
+                    source="google_maps",
+                    website=lead.website,
+                    verified_no_website=bool(lead.notes.get("verified_no_website", False)),
+                    observations=tuple(lead.notes.get("website_observations", ())),
+                    preview_url=str(lead.notes.get("preview_url", "")),
+                )
+                subject, body = render_google_maps_outreach(context)
+                output = "Created Google Maps outreach from verified evidence."
+            else:
+                subject = "B2B Bot: outbound pipeline test"
+                body = (
+                    f"Hi {first_name},\n\n"
+                    "This is an internal test from the B2B Bot company. The six outbound employees "
+                    "processed this message before the send step.\n\n"
+                    "Outbound pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n"
+                    "Employee #7, Closer, activates only after a prospect replies.\n\n"
+                    "No sales outreach was performed; this message was prepared only to verify the workflow.\n\n"
+                    f"{professional_signature()}"
+                )
+                output = "Created personalized internal test email."
+        except ValueError as exc:
+            lead.notes.pop("subject", None)
+            lead.notes.pop("body", None)
+            return _stage(self.name, STATUS_FAILED, f"Personalization failed closed: {exc}")
 
         lead.notes["subject"] = subject
         lead.notes["body"] = body
-        return {
-            "employee": self.name,
-            "status": "complete",
-            "output": output,
-        }
+        return _stage(self.name, STATUS_COMPLETE, output)
 
 
 class SalesBot:
     name = "Sales Bot"
 
     def run(self, lead: Lead) -> dict[str, Any]:
-        approved = bool(lead.notes.get("qualified") and lead.notes.get("subject") and lead.notes.get("body"))
+        if not lead.notes.get("qualified"):
+            lead.notes["approved_to_send"] = False
+            return _stage(self.name, STATUS_SKIPPED, "Lead was not qualified.")
+        if not lead.notes.get("subject") or not lead.notes.get("body"):
+            lead.notes["approved_to_send"] = False
+            return _stage(self.name, STATUS_BLOCKED, "No valid personalized message is available.")
+        if lead.notes.get("suppressed") or lead.notes.get("opted_out"):
+            lead.notes["approved_to_send"] = False
+            return _stage(self.name, STATUS_BLOCKED, "Outreach is suppressed for this lead.")
+
+        internal_test = lead.source == "internal_gmail_test"
+        external_clearance = bool(lead.notes.get("outreach_clearance"))
+        approved = internal_test or external_clearance
         lead.notes["approved_to_send"] = approved
-        return {
-            "employee": self.name,
-            "status": "complete",
-            "output": "Approved message for Gmail submission." if approved else "Blocked message before send.",
-        }
+        if not approved:
+            return _stage(self.name, STATUS_BLOCKED, "External outreach is missing explicit outreach clearance.")
+        return _stage(self.name, STATUS_COMPLETE, "Approved message for delivery adapter submission.")
 
 
 class Manager:
     name = "Manager"
 
     def run(self, lead: Lead, prior_stages: list[dict[str, Any]]) -> dict[str, Any]:
-        passed = all(stage["status"] == "complete" for stage in prior_stages) and bool(lead.notes.get("approved_to_send"))
-        return {
-            "employee": self.name,
-            "status": "complete",
-            "output": "Outbound pipeline passed all six pre-send stages." if passed else "Pipeline requires review.",
-            "pipeline_passed": passed,
-        }
+        blocking = [
+            stage for stage in prior_stages
+            if stage["status"] in {STATUS_BLOCKED, STATUS_FAILED, STATUS_SKIPPED}
+        ]
+        passed = not blocking and bool(lead.notes.get("approved_to_send"))
+        lead.notes["pipeline_passed"] = passed
+        return _stage(
+            self.name,
+            STATUS_COMPLETE,
+            "Pipeline passed all pre-send controls." if passed else "Pipeline stopped safely before delivery.",
+            pipeline_passed=passed,
+            blocked_by=[stage["employee"] for stage in blocking],
+        )
 
 
 class SixEmployeePipeline:
-    """Outbound team within the seven-employee company.
+    """Fail-closed outbound team within the seven-employee company.
 
-    Employees 1-6 prepare and approve outreach. Employee #7 (Closer) lives in
-    ``dashboard.services.closer`` and is invoked only when an inbound reply exists.
-    External delivery remains the responsibility of an adapter.
+    Employees 1-6 process one lead in order. Any blocked/failed stage causes
+    downstream work to be skipped. Employee #7 (Closer) activates only after an
+    inbound reply exists. External delivery remains the responsibility of an adapter.
     """
 
     def run(self, lead: Lead) -> PipelineResult:
         stages: list[dict[str, Any]] = []
-        stages.append(Scout().run(lead))
-        stages.append(Researcher().run(lead))
-        stages.append(Qualifier().run(lead))
-        stages.append(Personalizer().run(lead))
-        stages.append(SalesBot().run(lead))
+        workers = (Scout(), Researcher(), Qualifier(), Personalizer(), SalesBot())
+        blocked_reason = ""
+
+        for worker in workers:
+            if blocked_reason:
+                stages.append(_skip(worker.name, blocked_reason))
+                continue
+            result = worker.run(lead)
+            stages.append(result)
+            if result["status"] != STATUS_COMPLETE:
+                blocked_reason = f"Skipped because {worker.name} returned {result['status']}."
+
         manager_result = Manager().run(lead, stages)
         stages.append(manager_result)
 
