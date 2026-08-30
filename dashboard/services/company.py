@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from .boss import Boss, BossDecision
 from .closer import Closer, CloserDecision
 from .discovery_handoff import (
     ResearchHandoff,
@@ -43,6 +44,7 @@ class DeliveryClient(Protocol):
 class CompanyReplyResult:
     employee: str
     decision: CloserDecision
+    boss: BossDecision | None = None
 
 
 @dataclass(frozen=True)
@@ -51,10 +53,15 @@ class CompanyDeliveryResult:
     recipient: str
     message_id: str
     thread_id: str
+    boss: BossDecision | None = None
 
 
 class SevenEmployeeCompany:
-    """Company facade for the six outbound workers plus Employee #7, the Closer."""
+    """Compatibility name for the company facade, now operating eight employees.
+
+    Employees 1-6 handle outbound preparation, Employee #7 is Closer, and
+    Employee #8 is Boss. Boss supervises but cannot bypass worker controls.
+    """
 
     employee_names = (
         "Scout",
@@ -64,11 +71,13 @@ class SevenEmployeeCompany:
         "Sales Bot",
         "Manager",
         "Closer",
+        "Boss",
     )
 
     def __init__(self, *, suppression_store: SuppressionStore | None = None) -> None:
         self.outbound = SixEmployeePipeline()
         self.closer = Closer()
+        self.boss = Boss()
         self.suppression_store = suppression_store
 
     def scout_google_maps(
@@ -128,9 +137,11 @@ class SevenEmployeeCompany:
             lead.notes["suppressed"] = True
 
     def prepare_outreach(self, lead: Lead) -> PipelineResult:
-        """Run Employees 1-6 after consulting the durable do-not-contact registry."""
+        """Run Employees 1-6, then have Boss audit the exact result."""
         self._refresh_suppression(lead)
-        return self.outbound.run(lead)
+        result = self.outbound.run(lead)
+        lead.notes["boss_review"] = self.boss.review_outbound(result).payload()
+        return result
 
     def deliver_outreach(
         self,
@@ -156,11 +167,14 @@ class SevenEmployeeCompany:
         result.lead.notes["sent_message_id"] = receipt.message_id
         result.lead.notes["sent_thread_id"] = receipt.thread_id
         result.lead.notes["delivery_status"] = "sent"
+        boss_decision = self.boss.review_outbound(result)
+        result.lead.notes["boss_review"] = boss_decision.payload()
         return CompanyDeliveryResult(
             employee="Sales Bot",
             recipient=result.lead.email,
             message_id=receipt.message_id,
             thread_id=receipt.thread_id,
+            boss=boss_decision,
         )
 
     def handle_reply(
@@ -172,7 +186,7 @@ class SevenEmployeeCompany:
         thread_id: str = "",
         recipient_email: str = "",
     ) -> CompanyReplyResult:
-        """Run Closer and persist opt-out/negative suppression before returning."""
+        """Run Closer, persist suppression if needed, then have Boss prioritize it."""
         decision = self.closer.run(
             reply_text=reply_text,
             first_name=first_name,
@@ -190,4 +204,8 @@ class SevenEmployeeCompany:
                 lead_reference=lead_id,
                 thread_id=thread_id,
             )
-        return CompanyReplyResult(employee=self.closer.name, decision=decision)
+        return CompanyReplyResult(
+            employee=self.closer.name,
+            decision=decision,
+            boss=self.boss.review_reply(decision),
+        )
