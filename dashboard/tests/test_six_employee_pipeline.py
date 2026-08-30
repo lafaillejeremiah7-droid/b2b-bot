@@ -1,23 +1,33 @@
 from django.test import override_settings
 
-from dashboard.services.discovery_handoff import DiscoveryHandoff, apply_discovery_handoff
+from dashboard.services.discovery_handoff import (
+    ResearchHandoff,
+    ScoutHandoff,
+    apply_research_handoff,
+    apply_scout_handoff,
+)
 from dashboard.services.six_employee_pipeline import Lead, SixEmployeePipeline
 
 
 def verified_website_lead(*, clearance: bool = True) -> Lead:
     lead = Lead(
         name="Alex",
-        email="alex@example.com",
-        company="Example Roofing",
-        website="https://example.com",
+        email="",
         source="google_maps",
         notes={"outreach_clearance": clearance},
     )
-    apply_discovery_handoff(
+    scout = ScoutHandoff(
+        place_reference="place-123",
+        business_name="Example Roofing",
+        candidate_website="https://example.com",
+        formatted_address="123 Main St",
+        evidence_urls=("https://maps.example/place-123",),
+    )
+    apply_scout_handoff(lead, scout)
+    apply_research_handoff(
         lead,
-        DiscoveryHandoff(
-            place_reference="place-123",
-            business_name="Example Roofing",
+        ResearchHandoff(
+            scout_digest=scout.digest,
             contact_email="alex@example.com",
             website="https://example.com",
             contact_verified=True,
@@ -26,7 +36,34 @@ def verified_website_lead(*, clearance: bool = True) -> Lead:
                 "The primary quote action is below the first mobile viewport.",
                 "Service pages do not place a quote action beside individual services.",
             ),
-            evidence_urls=("https://maps.example/place-123", "https://example.com"),
+            evidence_urls=("https://example.com",),
+        ),
+    )
+    return lead
+
+
+def verified_no_website_lead(*, clearance: bool = True) -> Lead:
+    lead = Lead(
+        name="Taylor",
+        email="",
+        source="google_maps",
+        notes={"outreach_clearance": clearance},
+    )
+    scout = ScoutHandoff(
+        place_reference="place-456",
+        business_name="Example Auto Detail",
+        formatted_address="456 Main St",
+        evidence_urls=("https://maps.example/place-456",),
+    )
+    apply_scout_handoff(lead, scout)
+    apply_research_handoff(
+        lead,
+        ResearchHandoff(
+            scout_digest=scout.digest,
+            contact_email="taylor@example.com",
+            verified_no_website=True,
+            contact_verified=True,
+            evidence_urls=("https://maps.example/place-456",),
         ),
     )
     return lead
@@ -76,15 +113,41 @@ def test_verified_google_maps_website_lead_passes_end_to_end_pre_send_controls()
     assert "2. Service pages" in result.body
 
 
-def test_tampered_discovery_handoff_is_blocked_at_scout():
+@override_settings(
+    OUTREACH_SENDER_NAME="Test Sender",
+    OUTREACH_PHONE="555-0100",
+    OUTREACH_EMAIL="sender@example.com",
+)
+def test_verified_google_maps_no_website_lead_passes_correct_template():
+    result = SixEmployeePipeline().run(verified_no_website_lead())
+
+    assert result.approved_to_send is True
+    assert all(stage["status"] == "complete" for stage in result.stages)
+    assert "don't currently have a verified dedicated website" in result.body
+
+
+def test_tampered_scout_handoff_is_blocked_at_scout():
     lead = verified_website_lead()
-    lead.notes["discovery_handoff"]["business_name"] = "Tampered Company"
+    lead.notes["scout_handoff"]["business_name"] = "Tampered Company"
 
     result = SixEmployeePipeline().run(lead)
 
     assert result.approved_to_send is False
     assert result.stages[0]["employee"] == "Scout"
     assert result.stages[0]["status"] == "blocked"
+
+
+def test_tampered_research_handoff_is_blocked_at_researcher():
+    lead = verified_website_lead()
+    lead.notes["research_handoff"]["contact_email"] = "tampered@example.com"
+
+    result = SixEmployeePipeline().run(lead)
+
+    statuses = {stage["employee"]: stage["status"] for stage in result.stages}
+    assert result.approved_to_send is False
+    assert statuses["Scout"] == "complete"
+    assert statuses["Researcher"] == "blocked"
+    assert statuses["Qualifier"] == "skipped"
 
 
 def test_missing_google_maps_handoff_blocks_and_skips_downstream_workers():
