@@ -5,6 +5,8 @@ from typing import Any
 
 from django.conf import settings
 
+from dashboard.services.outreach_templates import OutreachContext, render_google_maps_outreach
+
 
 @dataclass
 class Lead:
@@ -26,9 +28,15 @@ class PipelineResult:
 
 
 def outbound_signature() -> str:
-    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Jeremiah")
+    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Jeremiah Lafaille").strip()
     phone = getattr(settings, "OUTREACH_PHONE", "").strip()
-    return f"- {sender}" + (f"\n{phone}" if phone else "")
+    email = getattr(settings, "OUTREACH_EMAIL", "").strip()
+    lines = ["Best,", sender, "Website Design & Digital Presence"]
+    if phone:
+        lines.append(f"Phone Number: {phone}")
+    if email:
+        lines.append(f"Email: {email}")
+    return "\n".join(lines)
 
 
 class Scout:
@@ -73,22 +81,38 @@ class Personalizer:
 
     def run(self, lead: Lead) -> dict[str, Any]:
         first_name = (lead.name or "there").split()[0]
-        subject = "B2B Bot: outbound pipeline test"
-        body = (
-            f"Hi {first_name},\n\n"
-            "This is an internal test from the B2B Bot company. The six outbound employees "
-            "processed this message before the send step.\n\n"
-            "Outbound pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n"
-            "Employee #7, Closer, activates only after a prospect replies.\n\n"
-            "No sales outreach was performed; this message was prepared only to verify the workflow.\n\n"
-            f"{outbound_signature()}"
-        )
+
+        if lead.source == "google_maps":
+            context = OutreachContext(
+                business_name=lead.company or lead.name,
+                first_name=first_name,
+                source="google_maps",
+                website=lead.website,
+                verified_no_website=bool(lead.notes.get("verified_no_website", False)),
+                observations=tuple(lead.notes.get("website_observations", ())),
+                preview_url=str(lead.notes.get("preview_url", "")),
+            )
+            subject, body = render_google_maps_outreach(context)
+            output = "Created Google Maps outreach using the verified website-status template."
+        else:
+            subject = "B2B Bot: outbound pipeline test"
+            body = (
+                f"Hi {first_name},\n\n"
+                "This is an internal test from the B2B Bot company. The six outbound employees "
+                "processed this message before the send step.\n\n"
+                "Outbound pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n"
+                "Employee #7, Closer, activates only after a prospect replies.\n\n"
+                "No sales outreach was performed; this message was prepared only to verify the workflow.\n\n"
+                f"{outbound_signature()}"
+            )
+            output = "Created personalized internal test email."
+
         lead.notes["subject"] = subject
         lead.notes["body"] = body
         return {
             "employee": self.name,
             "status": "complete",
-            "output": "Created personalized internal test email.",
+            "output": output,
         }
 
 
