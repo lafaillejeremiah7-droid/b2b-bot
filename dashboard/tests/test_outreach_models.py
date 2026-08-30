@@ -248,7 +248,14 @@ class EmailConstraintTests(EmailMixin, TestCase):
                 WHERE c.conrelid = 'emails'::regclass AND c.contype = 'f'
                 """
             )
-            self.assertEqual(dict(cursor.fetchall()), {"lead_id": "leads"})
+            self.assertEqual(
+                dict(cursor.fetchall()),
+                {
+                    "lead_id": "leads",
+                    "outreach_request_id": "outreach_requests",
+                    "site_project_id": "site_projects",
+                },
+            )
 
     def test_subject_holds_1_to_200_characters(self):
         self.assert_accepted(subject="A")
@@ -546,7 +553,13 @@ class CallConstraintTests(CallMixin, TestCase):
                 WHERE c.conrelid = 'calls'::regclass AND c.contype = 'f'
                 """
             )
-            self.assertEqual(dict(cursor.fetchall()), {"lead_id": "leads"})
+            self.assertEqual(
+                dict(cursor.fetchall()),
+                {
+                    "lead_id": "leads",
+                    "outreach_request_id": "outreach_requests",
+                },
+            )
 
     def test_attempt_number_holds_1_through_20(self):
         for value in (1, 20, 7):
