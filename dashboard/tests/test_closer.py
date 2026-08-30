@@ -1,10 +1,11 @@
 from django.test import override_settings
 
+from dashboard.services.boss import BossAction
 from dashboard.services.closer import Closer, ReplyCategory
 from dashboard.services.company import SevenEmployeeCompany
 
 
-def test_company_declares_seven_employees():
+def test_company_declares_eight_employees():
     assert SevenEmployeeCompany.employee_names == (
         "Scout",
         "Researcher",
@@ -13,6 +14,7 @@ def test_company_declares_seven_employees():
         "Sales Bot",
         "Manager",
         "Closer",
+        "Boss",
     )
 
 
@@ -40,6 +42,9 @@ def test_interested_reply_escalates_with_thread_context_and_professional_signatu
     assert "Phone Number: 555-0100" in result.decision.draft_reply
     assert "Email: sender@example.com" in result.decision.draft_reply
     assert "B2B Bot" not in result.decision.draft_reply
+    assert result.boss is not None
+    assert result.boss.action is BossAction.OWNER_REVIEW
+    assert result.boss.owner_attention is True
 
 
 def test_meeting_request_is_high_intent_but_not_auto_sent_without_calendar():
