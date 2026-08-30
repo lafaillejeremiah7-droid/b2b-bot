@@ -19,6 +19,7 @@ PLACES_FIELD_MASK = ",".join(
         "places.types",
     )
 )
+NON_OPERATIONAL_STATUSES = {"CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY", "FUTURE_OPENING"}
 
 
 class GooglePlacesError(RuntimeError):
@@ -79,11 +80,11 @@ def _default_transport(
 
 
 class GooglePlacesTextSearchClient:
-    """Minimal official Places Text Search client used only by Scout.
+    """Official Places Text Search client used only by Scout.
 
-    It discovers business identity, address, and the website Google associates with
-    the place. It deliberately does not invent contact emails or claim that a missing
-    websiteUri proves no official website exists; those are Researcher responsibilities.
+    It discovers business identity, address, and Google's candidate website. Closed,
+    temporarily closed, and future-opening places are excluded from outreach. It does
+    not invent contact emails or treat a missing websiteUri as proof of no website.
     """
 
     def __init__(
@@ -141,7 +142,8 @@ class GooglePlacesTextSearchClient:
             if not isinstance(display_name, dict):
                 display_name = {}
             business_name = str(display_name.get("text", "")).strip()
-            if not place_id or not business_name:
+            business_status = str(raw.get("businessStatus", "")).strip().upper()
+            if not place_id or not business_name or business_status in NON_OPERATIONAL_STATUSES:
                 continue
             candidates.append(
                 PlaceCandidate(
@@ -149,7 +151,7 @@ class GooglePlacesTextSearchClient:
                     business_name=business_name,
                     formatted_address=str(raw.get("formattedAddress", "")).strip(),
                     website_uri=str(raw.get("websiteUri", "")).strip(),
-                    business_status=str(raw.get("businessStatus", "")).strip(),
+                    business_status=business_status,
                     types=tuple(
                         item for item in raw.get("types", ())
                         if isinstance(item, str) and item
