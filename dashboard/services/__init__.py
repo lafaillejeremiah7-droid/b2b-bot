@@ -1,6 +1,11 @@
 from .boss import Boss, BossAction, BossDecision, BossSnapshot, EmployeeKPI
 from .closer import Closer, CloserDecision, ReplyCategory
-from .company import CompanyDeliveryResult, CompanyReplyResult, SevenEmployeeCompany
+from .company import (
+    CompanyDeliveryResult,
+    CompanyReplyResult,
+    EightEmployeeCompany,
+    SevenEmployeeCompany,
+)
 from .discovery_handoff import (
     ResearchHandoff,
     ScoutHandoff,
@@ -27,6 +32,7 @@ __all__ = [
     "CompanyDeliveryResult",
     "CompanyReplyResult",
     "DjangoSuppressionStore",
+    "EightEmployeeCompany",
     "EmployeeKPI",
     "Lead",
     "OutreachClearance",
