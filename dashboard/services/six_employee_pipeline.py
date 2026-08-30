@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from django.conf import settings
+
 
 @dataclass
 class Lead:
@@ -21,6 +23,12 @@ class PipelineResult:
     body: str
     approved_to_send: bool
     stages: list[dict[str, Any]]
+
+
+def outbound_signature() -> str:
+    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Jeremiah")
+    phone = getattr(settings, "OUTREACH_PHONE", "").strip()
+    return f"- {sender}" + (f"\n{phone}" if phone else "")
 
 
 class Scout:
@@ -73,7 +81,7 @@ class Personalizer:
             "Outbound pipeline: Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager.\n"
             "Employee #7, Closer, activates only after a prospect replies.\n\n"
             "No sales outreach was performed; this message was prepared only to verify the workflow.\n\n"
-            "- B2B Bot"
+            f"{outbound_signature()}"
         )
         lead.notes["subject"] = subject
         lead.notes["body"] = body
