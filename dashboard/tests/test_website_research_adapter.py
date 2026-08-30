@@ -8,6 +8,7 @@ from dashboard.adapter.website_research import (
     WebsiteResearchError,
 )
 from dashboard.services.company import SevenEmployeeCompany
+from dashboard.services.outreach_clearance import OutreachClearance, apply_outreach_clearance
 
 
 HOME_HTML = """
@@ -135,7 +136,14 @@ def test_company_runs_scout_then_researcher_then_full_outbound_pipeline():
 
     lead = company.scout_google_maps("roofers in Austin", client=scout_client, max_results=1)[0]
     company.research_lead(lead, client=research_client)
-    lead.notes["outreach_clearance"] = True
+    apply_outreach_clearance(
+        lead,
+        OutreachClearance(
+            recipient_email=lead.email,
+            research_digest=lead.notes["research_digest"],
+            authority_reference="test-policy",
+        ),
+    )
     result = company.prepare_outreach(lead)
 
     assert result.approved_to_send is True
