@@ -7,6 +7,7 @@ from dashboard.services.discovery_handoff import (
     verify_research_handoff,
     verify_scout_handoff,
 )
+from dashboard.services.outreach_clearance import verify_outreach_clearance
 from dashboard.services.outreach_templates import (
     OutreachContext,
     professional_signature,
@@ -209,11 +210,15 @@ class SalesBot:
             return _stage(self.name, STATUS_BLOCKED, "Outreach is suppressed for this lead.")
 
         internal_test = lead.source == "internal_gmail_test"
-        external_clearance = bool(lead.notes.get("outreach_clearance"))
+        external_clearance = verify_outreach_clearance(lead) if not internal_test else False
         approved = internal_test or external_clearance
         lead.notes["approved_to_send"] = approved
         if not approved:
-            return _stage(self.name, STATUS_BLOCKED, "External outreach is missing explicit outreach clearance.")
+            return _stage(
+                self.name,
+                STATUS_BLOCKED,
+                "External outreach is missing a valid digest-bound clearance for this recipient and research evidence.",
+            )
         return _stage(self.name, STATUS_COMPLETE, "Approved message for delivery adapter submission.")
 
 
@@ -237,12 +242,7 @@ class Manager:
 
 
 class SixEmployeePipeline:
-    """Fail-closed outbound team within the seven-employee company.
-
-    Employees 1-6 process one lead in order. Any blocked/failed stage causes
-    downstream work to be skipped. Employee #7 (Closer) activates only after an
-    inbound reply exists. External delivery remains the responsibility of an adapter.
-    """
+    """Fail-closed outbound team within the seven-employee company."""
 
     def run(self, lead: Lead) -> PipelineResult:
         stages: list[dict[str, Any]] = []
