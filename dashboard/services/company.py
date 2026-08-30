@@ -92,14 +92,31 @@ class SevenEmployeeCompany:
             leads.append(lead)
         return leads
 
-    def research_lead(self, lead: Lead, *, client: ResearchClient) -> Lead:
-        """Employee #2 verifies contact/site evidence for one Scout-discovered lead."""
+    def _scout_from_lead(self, lead: Lead) -> ScoutHandoff:
         if not verify_scout_handoff(lead):
             raise ValueError("Researcher requires an intact Scout handoff.")
         payload = lead.notes.get("scout_handoff")
         if not isinstance(payload, dict):
             raise ValueError("Scout handoff payload is missing.")
-        scout = ScoutHandoff.from_payload(payload)
+        return ScoutHandoff.from_payload(payload)
+
+    def research_lead(self, lead: Lead, *, client: ResearchClient) -> Lead:
+        """Employee #2 verifies contact/site evidence with an explicit research client."""
+        scout = self._scout_from_lead(lead)
+        handoff = client.research(scout)
+        apply_research_handoff(lead, handoff)
+        return lead
+
+    def research_discovered_lead(
+        self,
+        lead: Lead,
+        *,
+        website_client: ResearchClient,
+        no_website_client: ResearchClient,
+    ) -> Lead:
+        """Route Researcher automatically using Scout's candidate-website evidence."""
+        scout = self._scout_from_lead(lead)
+        client = website_client if scout.candidate_website else no_website_client
         handoff = client.research(scout)
         apply_research_handoff(lead, handoff)
         return lead
