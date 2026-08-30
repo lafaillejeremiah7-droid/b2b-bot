@@ -30,3 +30,8 @@ class Operator(AbstractUser):
     slack_webhook_target = models.URLField(blank=True)
 
     objects = OperatorManager()
+
+    class Meta:
+        db_table = "operators"
+        verbose_name = "user"
+        verbose_name_plural = "users"
