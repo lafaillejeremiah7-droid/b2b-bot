@@ -33,9 +33,21 @@ class SevenEmployeeCompany:
         """Run Employees 1-6. The Closer has no work until a reply exists."""
         return self.outbound.run(lead)
 
-    def handle_reply(self, reply_text: str, first_name: str = "there") -> CompanyReplyResult:
-        """Run Employee #7 on an inbound prospect reply."""
+    def handle_reply(
+        self,
+        reply_text: str,
+        first_name: str = "there",
+        *,
+        lead_id: str = "",
+        thread_id: str = "",
+    ) -> CompanyReplyResult:
+        """Run Employee #7 on an inbound reply while preserving persistence keys."""
         return CompanyReplyResult(
             employee=self.closer.name,
-            decision=self.closer.run(reply_text=reply_text, first_name=first_name),
+            decision=self.closer.run(
+                reply_text=reply_text,
+                first_name=first_name,
+                lead_id=lead_id,
+                thread_id=thread_id,
+            ),
         )
