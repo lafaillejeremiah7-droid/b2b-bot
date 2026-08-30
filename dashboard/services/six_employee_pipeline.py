@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from dashboard.services.discovery_handoff import verify_discovery_handoff
+from dashboard.services.discovery_handoff import (
+    verify_research_handoff,
+    verify_scout_handoff,
+)
 from dashboard.services.outreach_templates import (
     OutreachContext,
     professional_signature,
@@ -55,15 +58,15 @@ class Scout:
             lead.notes["scout_verified"] = False
             return _stage(self.name, STATUS_BLOCKED, "Unsupported lead source; Scout requires Google Maps discovery evidence.")
 
-        verified = verify_discovery_handoff(lead)
+        verified = verify_scout_handoff(lead)
         lead.notes["scout_verified"] = verified
         if not verified:
             return _stage(
                 self.name,
                 STATUS_BLOCKED,
-                "Google Maps lead is missing a valid, digest-verified Scout discovery handoff.",
+                "Google Maps lead is missing a valid, digest-verified Scout handoff.",
             )
-        return _stage(self.name, STATUS_COMPLETE, "Verified Google Maps discovery handoff integrity.")
+        return _stage(self.name, STATUS_COMPLETE, "Verified Scout Google Maps discovery handoff integrity.")
 
 
 class Researcher:
@@ -82,6 +85,14 @@ class Researcher:
         if lead.source != "google_maps":
             lead.notes["research_verified"] = False
             return _stage(self.name, STATUS_BLOCKED, "Researcher only accepts verified Google Maps or internal-test leads.")
+
+        if not verify_research_handoff(lead):
+            lead.notes["research_verified"] = False
+            return _stage(
+                self.name,
+                STATUS_BLOCKED,
+                "Researcher is missing a valid digest-verified contact/site handoff tied to Scout's discovery.",
+            )
 
         verified_no_website = bool(lead.notes.get("verified_no_website"))
         website_verified = bool(lead.notes.get("website_verified"))
@@ -105,9 +116,9 @@ class Researcher:
             return _stage(
                 self.name,
                 STATUS_BLOCKED,
-                "Research evidence is incomplete: verify contact plus website status and two observations when a website exists.",
+                "Research evidence failed semantic validation after digest verification.",
             )
-        return _stage(self.name, STATUS_COMPLETE, "Verified contact and website-status research evidence.")
+        return _stage(self.name, STATUS_COMPLETE, "Verified Researcher contact and website-status evidence.")
 
 
 class Qualifier:
