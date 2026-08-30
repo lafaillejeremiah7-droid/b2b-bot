@@ -1,0 +1,16 @@
+[importlinter]
+root_package = dashboard
+
+[importlinter:contract:views_do_not_import_models]
+name = Views use services instead of models
+type = forbidden
+source_modules =
+    dashboard.views
+forbidden_modules =
+    dashboard.models
+
+# Future task-specific boundaries from design §3.0.1 are added when their
+# owning modules exist: only outreach_controller may reach send adapters, and
+# only release_gate may reach release_authorizations. Declaring nonexistent
+# source modules would make import-linter fail for absence rather than for an
+# architectural violation.
