@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from dashboard.services.discovery_handoff import verify_discovery_handoff
 from dashboard.services.outreach_templates import (
     OutreachContext,
     professional_signature,
@@ -54,21 +55,15 @@ class Scout:
             lead.notes["scout_verified"] = False
             return _stage(self.name, STATUS_BLOCKED, "Unsupported lead source; Scout requires Google Maps discovery evidence.")
 
-        discovery_verified = bool(lead.notes.get("discovery_verified"))
-        place_reference = str(
-            lead.notes.get("google_maps_place_id")
-            or lead.notes.get("google_maps_url")
-            or ""
-        ).strip()
-        verified = discovery_verified and bool(place_reference) and bool(lead.company or lead.name)
+        verified = verify_discovery_handoff(lead)
         lead.notes["scout_verified"] = verified
         if not verified:
             return _stage(
                 self.name,
                 STATUS_BLOCKED,
-                "Google Maps lead is missing verified discovery evidence or a Maps place reference.",
+                "Google Maps lead is missing a valid, digest-verified Scout discovery handoff.",
             )
-        return _stage(self.name, STATUS_COMPLETE, "Verified Google Maps discovery handoff.")
+        return _stage(self.name, STATUS_COMPLETE, "Verified Google Maps discovery handoff integrity.")
 
 
 class Researcher:
