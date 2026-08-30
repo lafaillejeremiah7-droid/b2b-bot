@@ -59,6 +59,10 @@ SESSION_IDLE_TIMEOUT_SECONDS = int(os.getenv("SESSION_IDLE_TIMEOUT_SECONDS", "18
 SESSION_COOKIE_AGE = SESSION_IDLE_TIMEOUT_SECONDS
 SESSION_SAVE_EVERY_REQUEST = True
 
+# External integrations are injected at runtime; secrets stay out of the repo.
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+GOOGLE_MAPS_SEARCH_PAGE_SIZE = int(os.getenv("GOOGLE_MAPS_SEARCH_PAGE_SIZE", "10"))
+
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
 OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah Lafaille")
