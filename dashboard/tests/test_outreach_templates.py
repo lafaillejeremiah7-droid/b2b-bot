@@ -18,6 +18,7 @@ def test_google_maps_website_brand_gets_two_real_observations_and_professional_s
         website="https://example.com",
         source="google_maps",
         notes={
+            "qualified": True,
             "website_observations": [
                 "Your mobile homepage pushes the main quote button below the first screen.",
                 "Your services page lists each service but does not place a quote CTA beside them.",
@@ -26,8 +27,9 @@ def test_google_maps_website_brand_gets_two_real_observations_and_professional_s
         },
     )
 
-    Personalizer().run(lead)
+    result = Personalizer().run(lead)
 
+    assert result["status"] == "complete"
     body = lead.notes["body"]
     assert "1. Your mobile homepage" in body
     assert "2. Your services page" in body
@@ -47,11 +49,12 @@ def test_google_maps_no_website_brand_gets_no_website_template_and_professional_
         email="taylor@example.com",
         company="Example Auto Detail",
         source="google_maps",
-        notes={"verified_no_website": True},
+        notes={"qualified": True, "verified_no_website": True},
     )
 
-    Personalizer().run(lead)
+    result = Personalizer().run(lead)
 
+    assert result["status"] == "complete"
     body = lead.notes["body"]
     assert "don't currently have a verified dedicated website" in body
     assert "What you offer and why they should choose you" in body
