@@ -159,7 +159,7 @@ def _candidate_contact_urls(page: FetchedPage, parser: _PageParser) -> list[str]
 
 def _emails_from_page(page: FetchedPage, parser: _PageParser) -> set[str]:
     emails = {email.strip().casefold() for email in parser.mailto_emails if email.strip()}
-    emails.update(match.group(0).casefold() for match in EMAIL_RE.finditer(page.html))
+    emails.update(match.group(0).casefold() for match in EMAIL_RE.finditer(parser.visible_text))
     return {
         email
         for email in emails
