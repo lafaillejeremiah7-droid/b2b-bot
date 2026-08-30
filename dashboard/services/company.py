@@ -56,11 +56,11 @@ class CompanyDeliveryResult:
     boss: BossDecision | None = None
 
 
-class SevenEmployeeCompany:
-    """Compatibility name for the company facade, now operating eight employees.
+class EightEmployeeCompany:
+    """Company facade for six outbound workers, Closer #7, and Boss #8.
 
-    Employees 1-6 handle outbound preparation, Employee #7 is Closer, and
-    Employee #8 is Boss. Boss supervises but cannot bypass worker controls.
+    Boss supervises results and priorities but cannot bypass Researcher evidence,
+    outreach clearance, durable suppression, or the delivery boundary.
     """
 
     employee_names = (
@@ -209,3 +209,7 @@ class SevenEmployeeCompany:
             decision=decision,
             boss=self.boss.review_reply(decision),
         )
+
+
+# Compatibility alias for code written before Boss #8 was introduced.
+SevenEmployeeCompany = EightEmployeeCompany
