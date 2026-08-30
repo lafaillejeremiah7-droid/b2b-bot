@@ -1,6 +1,9 @@
+from django.test import override_settings
+
 from dashboard.services.six_employee_pipeline import Lead, SixEmployeePipeline
 
 
+@override_settings(OUTREACH_SENDER_NAME="Jeremiah", OUTREACH_PHONE="555-0100")
 def test_internal_gmail_self_test_passes_all_six_outbound_employees():
     result = SixEmployeePipeline().run(
         Lead(
@@ -21,6 +24,7 @@ def test_internal_gmail_self_test_passes_all_six_outbound_employees():
     ]
     assert "internal test" in result.body.lower()
     assert "Employee #7, Closer" in result.body
+    assert result.body.endswith("- Jeremiah\n555-0100")
 
 
 def test_external_recipient_is_blocked_by_minimal_pipeline():
