@@ -12,6 +12,7 @@ from .discovery_handoff import (
     verify_scout_handoff,
 )
 from .six_employee_pipeline import Lead, PipelineResult, SixEmployeePipeline
+from .suppression import SuppressionStore
 
 
 class ScoutCandidate(Protocol):
@@ -65,9 +66,10 @@ class SevenEmployeeCompany:
         "Closer",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *, suppression_store: SuppressionStore | None = None) -> None:
         self.outbound = SixEmployeePipeline()
         self.closer = Closer()
+        self.suppression_store = suppression_store
 
     def scout_google_maps(
         self,
@@ -102,8 +104,15 @@ class SevenEmployeeCompany:
         apply_research_handoff(lead, handoff)
         return lead
 
+    def _refresh_suppression(self, lead: Lead) -> None:
+        if self.suppression_store is None or not lead.email.strip():
+            return
+        if self.suppression_store.is_suppressed(lead.email):
+            lead.notes["suppressed"] = True
+
     def prepare_outreach(self, lead: Lead) -> PipelineResult:
-        """Run Employees 1-6. The Closer has no work until a reply exists."""
+        """Run Employees 1-6 after consulting the durable do-not-contact registry."""
+        self._refresh_suppression(lead)
         return self.outbound.run(lead)
 
     def deliver_outreach(
@@ -112,11 +121,12 @@ class SevenEmployeeCompany:
         *,
         client: DeliveryClient,
     ) -> CompanyDeliveryResult:
-        """Submit only a fully Manager-approved Sales Bot result to the mail adapter."""
+        """Submit only a fully approved result after one final suppression check."""
         if not result.approved_to_send:
             raise ValueError("Delivery rejected: the outbound pipeline did not pass.")
         if not result.lead.email.strip():
             raise ValueError("Delivery rejected: recipient email is missing.")
+        self._refresh_suppression(result.lead)
         if result.lead.notes.get("suppressed") or result.lead.notes.get("opted_out"):
             raise ValueError("Delivery rejected: lead is suppressed.")
         receipt = client.send(
@@ -143,14 +153,24 @@ class SevenEmployeeCompany:
         *,
         lead_id: str = "",
         thread_id: str = "",
+        recipient_email: str = "",
     ) -> CompanyReplyResult:
-        """Run Employee #7 on an inbound reply while preserving persistence keys."""
-        return CompanyReplyResult(
-            employee=self.closer.name,
-            decision=self.closer.run(
-                reply_text=reply_text,
-                first_name=first_name,
-                lead_id=lead_id,
-                thread_id=thread_id,
-            ),
+        """Run Closer and persist opt-out/negative suppression before returning."""
+        decision = self.closer.run(
+            reply_text=reply_text,
+            first_name=first_name,
+            lead_id=lead_id,
+            thread_id=thread_id,
         )
+        if decision.suppression_required and recipient_email.strip():
+            if self.suppression_store is None:
+                raise RuntimeError(
+                    "Closer requested suppression but no durable suppression store is configured."
+                )
+            self.suppression_store.suppress(
+                recipient_email,
+                reason=decision.category.value,
+                lead_reference=lead_id,
+                thread_id=thread_id,
+            )
+        return CompanyReplyResult(employee=self.closer.name, decision=decision)
