@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .closer import Closer, CloserDecision
-from .discovery_handoff import ScoutHandoff, apply_scout_handoff
+from .discovery_handoff import (
+    ResearchHandoff,
+    ScoutHandoff,
+    apply_research_handoff,
+    apply_scout_handoff,
+    verify_scout_handoff,
+)
 from .six_employee_pipeline import Lead, PipelineResult, SixEmployeePipeline
 
 
@@ -17,6 +23,10 @@ class ScoutCandidate(Protocol):
 
 class ScoutSearchClient(Protocol):
     def search(self, text_query: str, *, max_results: int = 10) -> list[ScoutCandidate]: ...
+
+
+class ResearchClient(Protocol):
+    def research(self, scout: ScoutHandoff) -> ResearchHandoff: ...
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,18 @@ class SevenEmployeeCompany:
             apply_scout_handoff(lead, candidate.to_scout_handoff())
             leads.append(lead)
         return leads
+
+    def research_lead(self, lead: Lead, *, client: ResearchClient) -> Lead:
+        """Employee #2 verifies contact/site evidence for one Scout-discovered lead."""
+        if not verify_scout_handoff(lead):
+            raise ValueError("Researcher requires an intact Scout handoff.")
+        payload = lead.notes.get("scout_handoff")
+        if not isinstance(payload, dict):
+            raise ValueError("Scout handoff payload is missing.")
+        scout = ScoutHandoff.from_payload(payload)
+        handoff = client.research(scout)
+        apply_research_handoff(lead, handoff)
+        return lead
 
     def prepare_outreach(self, lead: Lead) -> PipelineResult:
         """Run Employees 1-6. The Closer has no work until a reply exists."""
