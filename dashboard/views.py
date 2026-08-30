@@ -6,7 +6,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render
 
-from dashboard.models import OutreachSuppression
+from dashboard.services.dashboard_state import integration_readiness, suppression_count
 
 
 @dataclass(frozen=True)
@@ -40,20 +40,15 @@ def _employee_cards() -> tuple[EmployeeCard, ...]:
 @login_required
 def company_dashboard(request):
     cards = _employee_cards()
-    integrations = (
-        {"name": "Google Places", "configured": bool(settings.GOOGLE_MAPS_API_KEY), "purpose": "Scout discovery"},
-        {"name": "Independent web search", "configured": bool(settings.SERPAPI_API_KEY), "purpose": "No-website verification"},
-        {"name": "Outbound identity", "configured": bool(settings.OUTREACH_EMAIL and settings.OUTREACH_PHONE), "purpose": "Professional email signature"},
-        {"name": "Gmail OAuth", "configured": None, "purpose": "Injected at send runtime; never stored in the repo"},
-    )
+    integrations = integration_readiness()
     return render(
         request,
         "dashboard/company.html",
         {
             "employees": cards,
             "employee_count": len(cards),
-            "suppression_count": OutreachSuppression.objects.count(),
-            "configured_integrations": sum(item["configured"] is True for item in integrations),
+            "suppression_count": suppression_count(),
+            "configured_integrations": sum(item.configured is True for item in integrations),
             "integration_count": len(integrations),
             "integrations": integrations,
             "telemetry_persisted": False,
