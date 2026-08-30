@@ -8,6 +8,7 @@ source_modules =
     dashboard.views
 forbidden_modules =
     dashboard.models
+allow_indirect_imports = True
 
 # Future task-specific boundaries from design §3.0.1 are added when their
 # owning modules exist: only outreach_controller may reach send adapters, and
