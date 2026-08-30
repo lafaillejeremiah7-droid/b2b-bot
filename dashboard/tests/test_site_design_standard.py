@@ -8,7 +8,7 @@ def test_generated_sites_default_to_premium_quality_bar():
     standard = DEFAULT_SITE_DESIGN_STANDARD
 
     assert standard.minimum_quality_score >= 90
-    assert "generic WordPress" in standard.forbidden_traits
+    assert any("generic WordPress" in trait for trait in standard.forbidden_traits)
     assert any("cinematic" in trait for trait in standard.required_traits)
     assert any("responsive" in trait for trait in standard.required_traits)
 
