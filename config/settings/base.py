@@ -62,6 +62,8 @@ SESSION_SAVE_EVERY_REQUEST = True
 # External integrations are injected at runtime; secrets stay out of the repo.
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 GOOGLE_MAPS_SEARCH_PAGE_SIZE = int(os.getenv("GOOGLE_MAPS_SEARCH_PAGE_SIZE", "10"))
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
+SERPAPI_SEARCH_MAX_RESULTS = int(os.getenv("SERPAPI_SEARCH_MAX_RESULTS", "10"))
 
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
