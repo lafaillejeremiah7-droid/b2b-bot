@@ -45,6 +45,39 @@ def test_google_places_client_returns_scout_candidate_without_inventing_contact_
     assert not hasattr(candidate, "email")
 
 
+def test_google_places_client_excludes_closed_and_future_businesses():
+    def fake_transport(url, payload, headers, timeout):
+        return {
+            "places": [
+                {
+                    "id": "open-1",
+                    "displayName": {"text": "Open Roofing"},
+                    "businessStatus": "OPERATIONAL",
+                },
+                {
+                    "id": "closed-1",
+                    "displayName": {"text": "Closed Roofing"},
+                    "businessStatus": "CLOSED_PERMANENTLY",
+                },
+                {
+                    "id": "closed-2",
+                    "displayName": {"text": "Temporarily Closed Roofing"},
+                    "businessStatus": "CLOSED_TEMPORARILY",
+                },
+                {
+                    "id": "future-1",
+                    "displayName": {"text": "Future Roofing"},
+                    "businessStatus": "FUTURE_OPENING",
+                },
+            ]
+        }
+
+    client = GooglePlacesTextSearchClient("test-key", transport=fake_transport)
+    candidates = client.search("roofers in Austin")
+
+    assert [candidate.place_id for candidate in candidates] == ["open-1"]
+
+
 def test_company_scout_search_creates_verified_scout_lead_then_stops_for_research():
     def fake_transport(url, payload, headers, timeout):
         return {
@@ -54,6 +87,7 @@ def test_company_scout_search_creates_verified_scout_lead_then_stops_for_researc
                     "displayName": {"text": "Example Roofing"},
                     "formattedAddress": "123 Main St",
                     "websiteUri": "https://example.com",
+                    "businessStatus": "OPERATIONAL",
                 }
             ]
         }
