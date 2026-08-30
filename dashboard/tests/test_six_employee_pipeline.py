@@ -6,16 +6,26 @@ from dashboard.services.discovery_handoff import (
     apply_research_handoff,
     apply_scout_handoff,
 )
+from dashboard.services.outreach_clearance import (
+    OutreachClearance,
+    apply_outreach_clearance,
+)
 from dashboard.services.six_employee_pipeline import Lead, SixEmployeePipeline
 
 
-def verified_website_lead(*, clearance: bool = True) -> Lead:
-    lead = Lead(
-        name="Alex",
-        email="",
-        source="google_maps",
-        notes={"outreach_clearance": clearance},
+def _apply_test_clearance(lead: Lead) -> None:
+    apply_outreach_clearance(
+        lead,
+        OutreachClearance(
+            recipient_email=lead.email,
+            research_digest=lead.notes["research_digest"],
+            authority_reference="test-policy",
+        ),
     )
+
+
+def verified_website_lead(*, clearance: bool = True) -> Lead:
+    lead = Lead(name="Alex", email="", source="google_maps")
     scout = ScoutHandoff(
         place_reference="place-123",
         business_name="Example Roofing",
@@ -39,16 +49,13 @@ def verified_website_lead(*, clearance: bool = True) -> Lead:
             evidence_urls=("https://example.com",),
         ),
     )
+    if clearance:
+        _apply_test_clearance(lead)
     return lead
 
 
 def verified_no_website_lead(*, clearance: bool = True) -> Lead:
-    lead = Lead(
-        name="Taylor",
-        email="",
-        source="google_maps",
-        notes={"outreach_clearance": clearance},
-    )
+    lead = Lead(name="Taylor", email="", source="google_maps")
     scout = ScoutHandoff(
         place_reference="place-456",
         business_name="Example Auto Detail",
@@ -66,6 +73,8 @@ def verified_no_website_lead(*, clearance: bool = True) -> Lead:
             evidence_urls=("https://maps.example/place-456",),
         ),
     )
+    if clearance:
+        _apply_test_clearance(lead)
     return lead
 
 
@@ -172,6 +181,21 @@ def test_missing_google_maps_handoff_blocks_and_skips_downstream_workers():
 
 def test_verified_external_lead_without_clearance_stops_at_sales_bot():
     result = SixEmployeePipeline().run(verified_website_lead(clearance=False))
+
+    statuses = {stage["employee"]: stage["status"] for stage in result.stages}
+    assert result.approved_to_send is False
+    assert statuses["Scout"] == "complete"
+    assert statuses["Researcher"] == "complete"
+    assert statuses["Qualifier"] == "complete"
+    assert statuses["Personalizer"] == "complete"
+    assert statuses["Sales Bot"] == "blocked"
+
+
+def test_tampered_clearance_stops_at_sales_bot():
+    lead = verified_website_lead()
+    lead.notes["outreach_clearance"]["recipient_email"] = "other@example.com"
+
+    result = SixEmployeePipeline().run(lead)
 
     statuses = {stage["employee"]: stage["status"] for stage in result.stages}
     assert result.approved_to_send is False
