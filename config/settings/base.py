@@ -61,8 +61,9 @@ SESSION_SAVE_EVERY_REQUEST = True
 
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
-OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah")
+OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah Lafaille")
 OUTREACH_PHONE = os.getenv("OUTREACH_PHONE", "")
+OUTREACH_EMAIL = os.getenv("OUTREACH_EMAIL", "")
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
