@@ -169,9 +169,9 @@ def _emails(result: SearchResult) -> set[str]:
 class NoWebsiteResearchClient:
     """Research businesses for which Google Places supplies no candidate website.
 
-    The adapter requires two independent search queries. Any plausible official-site
-    result blocks the no-website claim. A public email must appear in a result that
-    also matches the business identity; otherwise the lead is rejected.
+    Two independent searches must both return evidence. Any plausible non-directory
+    site blocks the no-website claim. A public email is accepted only when the same
+    address appears on at least two distinct matching third-party result URLs.
     """
 
     def __init__(self, search_client: SearchClient, *, max_results: int = 10) -> None:
@@ -192,9 +192,8 @@ class NoWebsiteResearchClient:
             f"{identity} {address}".strip(),
             f"{identity} official website email",
         ]
-        all_results: list[SearchResult] = []
         evidence_urls = list(scout.evidence_urls)
-        verified_emails: list[str] = []
+        email_sources: dict[str, set[str]] = {}
 
         for query in queries:
             results = self._search.search(
@@ -202,7 +201,10 @@ class NoWebsiteResearchClient:
                 location=address,
                 max_results=self._max_results,
             )
-            all_results.extend(results)
+            if not results:
+                raise NoWebsiteResearchError(
+                    "One of the independent web searches returned no evidence; no-website status is unverified."
+                )
             for result in results:
                 if result.link not in evidence_urls:
                     evidence_urls.append(result.link)
@@ -212,20 +214,23 @@ class NoWebsiteResearchClient:
                     raise NoWebsiteResearchError(
                         f"A plausible official website was found and must be inspected: {result.link}"
                     )
-                verified_emails.extend(sorted(_emails(result)))
+                for email in _emails(result):
+                    email_sources.setdefault(email, set()).add(result.link)
 
-        if not all_results:
-            raise NoWebsiteResearchError("Independent web searches returned no evidence.")
-        if not verified_emails:
+        corroborated = {
+            email: sources
+            for email, sources in email_sources.items()
+            if len(sources) >= 2
+        }
+        if not corroborated:
             raise NoWebsiteResearchError(
-                "No public business email could be verified from matching third-party search evidence."
+                "No public business email was corroborated by at least two distinct matching third-party results."
             )
 
-        # Prefer an address seen consistently in more than one result/query when possible.
-        counts: dict[str, int] = {}
-        for email in verified_emails:
-            counts[email] = counts.get(email, 0) + 1
-        contact_email = sorted(counts, key=lambda item: (-counts[item], item))[0]
+        contact_email = sorted(
+            corroborated,
+            key=lambda item: (-len(corroborated[item]), item),
+        )[0]
 
         return ResearchHandoff(
             scout_digest=scout.digest,
