@@ -29,10 +29,27 @@ class ResearchClient(Protocol):
     def research(self, scout: ScoutHandoff) -> ResearchHandoff: ...
 
 
+class DeliveryReceiptLike(Protocol):
+    message_id: str
+    thread_id: str
+
+
+class DeliveryClient(Protocol):
+    def send(self, *, to: str, subject: str, body: str) -> DeliveryReceiptLike: ...
+
+
 @dataclass(frozen=True)
 class CompanyReplyResult:
     employee: str
     decision: CloserDecision
+
+
+@dataclass(frozen=True)
+class CompanyDeliveryResult:
+    employee: str
+    recipient: str
+    message_id: str
+    thread_id: str
 
 
 class SevenEmployeeCompany:
@@ -59,11 +76,7 @@ class SevenEmployeeCompany:
         client: ScoutSearchClient,
         max_results: int = 10,
     ) -> list[Lead]:
-        """Employee #1 discovers candidates and attaches a verified Scout handoff.
-
-        Contact/email research is intentionally not done here. The returned leads
-        must receive a ResearchHandoff before the outbound pipeline can advance.
-        """
+        """Employee #1 discovers candidates and attaches a verified Scout handoff."""
         leads: list[Lead] = []
         for candidate in client.search(text_query, max_results=max_results):
             lead = Lead(
@@ -92,6 +105,36 @@ class SevenEmployeeCompany:
     def prepare_outreach(self, lead: Lead) -> PipelineResult:
         """Run Employees 1-6. The Closer has no work until a reply exists."""
         return self.outbound.run(lead)
+
+    def deliver_outreach(
+        self,
+        result: PipelineResult,
+        *,
+        client: DeliveryClient,
+    ) -> CompanyDeliveryResult:
+        """Submit only a fully Manager-approved Sales Bot result to the mail adapter."""
+        if not result.approved_to_send:
+            raise ValueError("Delivery rejected: the outbound pipeline did not pass.")
+        if not result.lead.email.strip():
+            raise ValueError("Delivery rejected: recipient email is missing.")
+        if result.lead.notes.get("suppressed") or result.lead.notes.get("opted_out"):
+            raise ValueError("Delivery rejected: lead is suppressed.")
+        receipt = client.send(
+            to=result.lead.email,
+            subject=result.subject,
+            body=result.body,
+        )
+        if not receipt.message_id or not receipt.thread_id:
+            raise ValueError("Delivery adapter returned an incomplete receipt.")
+        result.lead.notes["sent_message_id"] = receipt.message_id
+        result.lead.notes["sent_thread_id"] = receipt.thread_id
+        result.lead.notes["delivery_status"] = "sent"
+        return CompanyDeliveryResult(
+            employee="Sales Bot",
+            recipient=result.lead.email,
+            message_id=receipt.message_id,
+            thread_id=receipt.thread_id,
+        )
 
     def handle_reply(
         self,
