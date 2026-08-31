@@ -12,7 +12,7 @@ from .discovery_handoff import (
     apply_scout_handoff,
     verify_scout_handoff,
 )
-from .six_employee_pipeline import Lead, PipelineResult, SixEmployeePipeline
+from .six_employee_pipeline import Lead, PipelineResult, SalesBot, SixEmployeePipeline
 from .suppression import SuppressionStore
 
 
@@ -149,29 +149,38 @@ class EightEmployeeCompany:
         *,
         client: DeliveryClient,
     ) -> CompanyDeliveryResult:
-        """Submit only a fully approved result after one final suppression check."""
+        """Re-run Employees 1-6, then let Sales Bot submit the exact approved message."""
         if not result.approved_to_send:
             raise ValueError("Delivery rejected: the outbound pipeline did not pass.")
         if not result.lead.email.strip():
             raise ValueError("Delivery rejected: recipient email is missing.")
+
         self._refresh_suppression(result.lead)
         if result.lead.notes.get("suppressed") or result.lead.notes.get("opted_out"):
             raise ValueError("Delivery rejected: lead is suppressed.")
-        receipt = client.send(
-            to=result.lead.email,
-            subject=result.subject,
-            body=result.body,
-        )
+
+        # Nothing is trusted just because it passed earlier. Re-run the complete
+        # Scout -> Researcher -> Qualifier -> Personalizer -> Sales Bot -> Manager
+        # chain immediately before the network side effect. This catches evidence,
+        # recipient, clearance, template, or configuration drift between prepare
+        # and send. If the regenerated message changes, require a fresh prepare.
+        revalidated = self.outbound.run(result.lead)
+        if not revalidated.approved_to_send:
+            raise ValueError("Delivery rejected: final six-worker revalidation failed.")
+        if revalidated.subject != result.subject or revalidated.body != result.body:
+            raise ValueError("Delivery rejected: approved message changed before submission.")
+
+        receipt = SalesBot().deliver_outreach(revalidated, client=client)
         if not receipt.message_id or not receipt.thread_id:
             raise ValueError("Delivery adapter returned an incomplete receipt.")
-        result.lead.notes["sent_message_id"] = receipt.message_id
-        result.lead.notes["sent_thread_id"] = receipt.thread_id
-        result.lead.notes["delivery_status"] = "sent"
-        boss_decision = self.boss.review_outbound(result)
-        result.lead.notes["boss_review"] = boss_decision.payload()
+        revalidated.lead.notes["sent_message_id"] = receipt.message_id
+        revalidated.lead.notes["sent_thread_id"] = receipt.thread_id
+        revalidated.lead.notes["delivery_status"] = "sent"
+        boss_decision = self.boss.review_outbound(revalidated)
+        revalidated.lead.notes["boss_review"] = boss_decision.payload()
         return CompanyDeliveryResult(
             employee="Sales Bot",
-            recipient=result.lead.email,
+            recipient=revalidated.lead.email.strip().lower(),
             message_id=receipt.message_id,
             thread_id=receipt.thread_id,
             boss=boss_decision,
@@ -193,13 +202,18 @@ class EightEmployeeCompany:
             lead_id=lead_id,
             thread_id=thread_id,
         )
-        if decision.suppression_required and recipient_email.strip():
+        if decision.suppression_required:
+            destination = recipient_email.strip().lower()
+            if not destination or "@" not in destination or len(destination) > 320:
+                raise RuntimeError(
+                    "Closer requested suppression but the exact recipient email is unavailable."
+                )
             if self.suppression_store is None:
                 raise RuntimeError(
                     "Closer requested suppression but no durable suppression store is configured."
                 )
             self.suppression_store.suppress(
-                recipient_email,
+                destination,
                 reason=decision.category.value,
                 lead_reference=lead_id,
                 thread_id=thread_id,
