@@ -1,0 +1,17 @@
+# Private runtime configuration
+.env
+.env.*
+!.env.example
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+.venv/
+venv/
+
+# Local/runtime artifacts
+*.log
+.DS_Store
