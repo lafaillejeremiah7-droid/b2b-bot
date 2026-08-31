@@ -1,0 +1,48 @@
+services:
+  - type: web
+    name: b2b-bot-dashboard
+    runtime: python
+    plan: free
+    region: ohio
+    branch: feat/b2b-runtime-foundation
+    autoDeploy: false
+    buildCommand: pip install -e . && python manage.py collectstatic --noinput && python manage.py migrate --noinput
+    startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    healthCheckPath: /health/
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "0"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: PIPELINE_ADAPTER_MODE
+        value: "stub"
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: b2b-bot-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: b2b-bot-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: b2b-bot-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: b2b-bot-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: b2b-bot-db
+          property: port
+
+databases:
+  - name: b2b-bot-db
+    plan: free
+    region: ohio
+    postgresMajorVersion: "16"
+    databaseName: b2b_bot
+    user: b2b_bot
