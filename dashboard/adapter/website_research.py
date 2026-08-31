@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from dashboard.services.discovery_handoff import ResearchHandoff, ScoutHandoff
 
@@ -101,19 +103,76 @@ class _PageParser(HTMLParser):
         return " ".join(self.title_parts).strip()
 
 
-def _default_fetch(url: str, timeout: float) -> FetchedPage:
-    parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+def _validate_public_http_url(url: str) -> str:
+    """Reject local/private destinations before Researcher performs network I/O."""
+    parsed = urlparse((url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise WebsiteResearchError("Researcher requires an absolute HTTP(S) website URL.")
+    if parsed.username is not None or parsed.password is not None:
+        raise WebsiteResearchError("Researcher website URLs may not contain credentials.")
+
+    hostname = parsed.hostname.casefold().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise WebsiteResearchError("Researcher refuses localhost/private-network website targets.")
+
+    try:
+        literal = ipaddress.ip_address(hostname)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not literal.is_global:
+            raise WebsiteResearchError("Researcher refuses localhost/private-network website targets.")
+        return parsed.geturl()
+
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise WebsiteResearchError("Researcher website URL has an invalid port.") from exc
+
+    try:
+        addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise WebsiteResearchError("Researcher could not resolve the official website hostname.") from exc
+    if not addresses:
+        raise WebsiteResearchError("Researcher could not resolve the official website hostname.")
+
+    resolved_ips: set[str] = set()
+    for entry in addresses:
+        sockaddr = entry[4]
+        if not sockaddr:
+            continue
+        resolved_ips.add(str(sockaddr[0]))
+    if not resolved_ips:
+        raise WebsiteResearchError("Researcher could not resolve the official website hostname.")
+    for raw_ip in resolved_ips:
+        try:
+            address = ipaddress.ip_address(raw_ip.split("%", 1)[0])
+        except ValueError as exc:
+            raise WebsiteResearchError("Researcher resolved an invalid website address.") from exc
+        if not address.is_global:
+            raise WebsiteResearchError("Researcher refuses localhost/private-network website targets.")
+    return parsed.geturl()
+
+
+class _PublicRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _validate_public_http_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_fetch(url: str, timeout: float) -> FetchedPage:
+    safe_url = _validate_public_http_url(url)
     request = Request(
-        url,
+        safe_url,
         headers={
             "User-Agent": "B2B-Bot-Researcher/0.1 (+website quality review)",
             "Accept": "text/html,application/xhtml+xml",
         },
     )
+    opener = build_opener(_PublicRedirectHandler())
     try:
-        with urlopen(request, timeout=timeout) as response:  # noqa: S310 - URL was validated above
+        with opener.open(request, timeout=timeout) as response:  # noqa: S310 - destination validated above and on redirect
+            final_url = _validate_public_http_url(response.geturl())
             content_type = response.headers.get("Content-Type", "")
             if "html" not in content_type.casefold():
                 raise WebsiteResearchError("Official website did not return HTML content.")
@@ -122,7 +181,7 @@ def _default_fetch(url: str, timeout: float) -> FetchedPage:
                 raise WebsiteResearchError("Website HTML exceeds the Researcher safety limit.")
             charset = response.headers.get_content_charset() or "utf-8"
             html = raw.decode(charset, errors="replace")
-            return FetchedPage(url, response.geturl(), html)
+            return FetchedPage(safe_url, final_url, html)
     except HTTPError as exc:
         raise WebsiteResearchError(f"Website returned HTTP {exc.code}.") from exc
     except URLError as exc:
