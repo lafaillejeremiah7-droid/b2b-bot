@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from dashboard.models import Lead, Operator, PipelineState, SiteReviewState
+from dashboard.models import Deal, Lead, Operator, PipelineState, SiteReviewState
 from dashboard.services.errors import AuthorizationRejected
 
 
@@ -81,7 +81,9 @@ def _latest_site(lead: Lead):
 
 
 def available_actions(lead: Lead, operator: Operator) -> dict[Action, Availability]:
-    deal = getattr(lead, "deal", None)
+    # Reverse one-to-one access raises RelatedObjectDoesNotExist when a Lead has
+    # no Deal; an explicit query keeps "no Deal yet" a normal pipeline state.
+    deal = Deal.objects.filter(lead_id=lead.id).first()
     latest_site = _latest_site(lead)
     result: dict[Action, Availability] = {}
 
