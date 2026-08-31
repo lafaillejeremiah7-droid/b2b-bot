@@ -4,13 +4,6 @@ from .gmail_delivery import (
     GmailDeliveryError,
     build_raw_message,
 )
-from .gmail_oauth import (
-    GmailOAuthConfig,
-    GmailOAuthError,
-    GmailOAuthTokenProvider,
-    get_gmail_delivery_client,
-    gmail_oauth_configured,
-)
 from .google_places import GooglePlacesTextSearchClient, PlaceCandidate
 from .no_website_research import (
     NoWebsiteResearchClient,
@@ -27,6 +20,14 @@ from .pipeline import (
     get_pipeline_adapter,
 )
 from .website_research import FetchedPage, WebsiteResearchClient, WebsiteResearchError
+from .yahoo_smtp import (
+    YahooSMTPConfig,
+    YahooSMTPDeliveryClient,
+    YahooSMTPError,
+    YahooSMTPReceipt,
+    get_yahoo_smtp_client,
+    yahoo_smtp_configured,
+)
 
 __all__ = [
     "AdapterResult",
@@ -34,9 +35,6 @@ __all__ = [
     "FetchedPage",
     "GmailDeliveryClient",
     "GmailDeliveryError",
-    "GmailOAuthConfig",
-    "GmailOAuthError",
-    "GmailOAuthTokenProvider",
     "GooglePlacesTextSearchClient",
     "LivePipelineAdapter",
     "NoWebsiteResearchClient",
@@ -49,8 +47,12 @@ __all__ = [
     "TimeoutEnforcingAdapter",
     "WebsiteResearchClient",
     "WebsiteResearchError",
+    "YahooSMTPConfig",
+    "YahooSMTPDeliveryClient",
+    "YahooSMTPError",
+    "YahooSMTPReceipt",
     "build_raw_message",
-    "get_gmail_delivery_client",
     "get_pipeline_adapter",
-    "gmail_oauth_configured",
+    "get_yahoo_smtp_client",
+    "yahoo_smtp_configured",
 ]
