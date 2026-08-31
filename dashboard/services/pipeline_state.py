@@ -10,6 +10,7 @@ from dashboard.models import (
     AuditActionType,
     Deal,
     HistoryActorKind,
+    Invoice,
     Lead,
     Operator,
     PipelineState,
@@ -88,7 +89,7 @@ def _deal(lead_id: int) -> Deal | None:
 def _assert_preconditions(lead: Lead, target: PipelineState) -> None:
     deal = _deal(lead.id)
     if target == S.INVOICED:
-        invoice_exists = bool(deal and getattr(deal, "invoice_record", None)) if deal else False
+        invoice_exists = bool(deal and Invoice.objects.filter(deal_id=deal.pk).exists())
         if deal is None or deal.agreed_price is None or not invoice_exists:
             raise TransitionRejected(
                 "Invoiced requires an agreed price and an invoice record.",
