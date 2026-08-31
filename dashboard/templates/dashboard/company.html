@@ -91,7 +91,7 @@
 
       <aside class="side">
         <section class="panel"><div class="panel-head"><h2>Integration readiness</h2><span>secrets stay external</span></div><div class="list">{% for integration in integrations %}<div class="integration"><div><strong>{{ integration.name }}</strong><small>{{ integration.purpose }}</small></div>{% if integration.configured is True %}<span class="flag yes">configured</span>{% elif integration.configured is False %}<span class="flag no">setup needed</span>{% else %}<span class="flag runtime">runtime</span>{% endif %}</div>{% endfor %}</div></section>
-        <section class="panel"><div class="panel-head"><h2>Boss KPI board</h2><span>truthful telemetry only</span></div><div class="telemetry"><div class="empty"><strong>Awaiting persisted pipeline telemetry</strong>Boss already computes KPI snapshots in the runtime. The next database slice will persist those outcomes so this board can show leads reviewed, approvals, sends, replies, positive replies, blockers, and per-employee completion rates across restarts.</div><div class="legend"><span>Scout → Maps</span><span>Researcher → evidence</span><span>Sales → clearance</span><span>Closer → replies</span><span>Boss → audit</span></div></div></section>
+        <section class="panel"><div class="panel-head"><h2>Boss KPI board</h2><span>truthful telemetry only</span></div><div class="telemetry"><div class="empty"><strong>Awaiting persisted pipeline telemetry</strong>Boss already computes KPI snapshots in the runtime. The next database slice will persist those outcomes so this board can show leads reviewed, approvals, sends, replies, positive replies, blockers, and per-employee completion rates across restarts.</div><div class="legend"><span>Scout → Maps</span><span>Researcher → evidence</span><span>Sales → clearance</span><span>Closer → replies + invoice link</span><span>Boss → audit</span></div></div></section>
       </aside>
     </section>
   </main>
@@ -101,7 +101,7 @@
     <section class="approval-card" role="dialog" aria-modal="true" aria-labelledby="invoice-approval-title">
       <div class="eyebrow">Invoice ready · approval required</div>
       <h2 id="invoice-approval-title">Send invoice to customer?</h2>
-      <p class="sub">Nothing is emailed until you choose Yes. This is the exact destination Stripe will use.</p>
+      <p class="sub">Nothing is emailed until you choose Yes. Closer #7 generates/finalizes the Stripe invoice link, then Sales Bot #5 emails that link to this exact customer address. Stripe itself does not send the email.</p>
       <div class="approval-data">
         <strong>Customer</strong><span>{{ pending_invoice.contact_name }}</span>
         <strong>Company</strong><span>{{ pending_invoice.company_name }}</span>
@@ -114,7 +114,7 @@
         <button class="yes" type="submit"{% if not pending_invoice.email %} disabled title="Set a customer email first"{% endif %}>Yes — Send Invoice</button>
         <button class="later" type="button" onclick="document.getElementById('dashboard-invoice-approval').style.display='none'">Not Now</button>
       </form>
-      <p class="sub" style="margin-top:16px;font-size:12px">Retries use the same Stripe idempotency identity, so this local invoice cannot create a duplicate Stripe invoice from repeated clicks.</p>
+      <p class="sub" style="margin-top:16px;font-size:12px">Retries reuse the same Stripe invoice identity and the same Sales Bot email idempotency key.</p>
     </section>
   </div>
   {% endif %}
