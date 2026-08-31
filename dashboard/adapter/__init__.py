@@ -4,6 +4,13 @@ from .gmail_delivery import (
     GmailDeliveryError,
     build_raw_message,
 )
+from .gmail_oauth import (
+    GmailOAuthConfig,
+    GmailOAuthError,
+    GmailOAuthTokenProvider,
+    get_gmail_delivery_client,
+    gmail_oauth_configured,
+)
 from .google_places import GooglePlacesTextSearchClient, PlaceCandidate
 from .no_website_research import (
     NoWebsiteResearchClient,
@@ -27,6 +34,9 @@ __all__ = [
     "FetchedPage",
     "GmailDeliveryClient",
     "GmailDeliveryError",
+    "GmailOAuthConfig",
+    "GmailOAuthError",
+    "GmailOAuthTokenProvider",
     "GooglePlacesTextSearchClient",
     "LivePipelineAdapter",
     "NoWebsiteResearchClient",
@@ -40,5 +50,7 @@ __all__ = [
     "WebsiteResearchClient",
     "WebsiteResearchError",
     "build_raw_message",
+    "get_gmail_delivery_client",
     "get_pipeline_adapter",
+    "gmail_oauth_configured",
 ]
