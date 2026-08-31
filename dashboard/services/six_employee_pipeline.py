@@ -4,12 +4,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from dashboard.services.discovery_handoff import (
-    verify_research_handoff,
+    verified_research_handoff,
     verify_scout_handoff,
 )
 from dashboard.services.outreach_clearance import verify_outreach_clearance
 from dashboard.services.outreach_templates import (
     OutreachContext,
+    first_name_token,
     professional_signature,
     render_google_maps_outreach,
     render_invoice_link_email,
@@ -54,7 +55,7 @@ class Scout:
     def run(self, lead: Lead) -> dict[str, Any]:
         if lead.source == "internal_gmail_test":
             lead.notes["scout_verified"] = True
-            return _stage(self.name, STATUS_COMPLETE, "Selected approved internal Gmail test lead.")
+            return _stage(self.name, STATUS_COMPLETE, "Selected approved internal email test lead.")
 
         if lead.source != "google_maps":
             lead.notes["scout_verified"] = False
@@ -88,7 +89,8 @@ class Researcher:
             lead.notes["research_verified"] = False
             return _stage(self.name, STATUS_BLOCKED, "Researcher only accepts verified Google Maps or internal-test leads.")
 
-        if not verify_research_handoff(lead):
+        handoff = verified_research_handoff(lead)
+        if handoff is None:
             lead.notes["research_verified"] = False
             return _stage(
                 self.name,
@@ -96,22 +98,28 @@ class Researcher:
                 "Researcher is missing a valid digest-verified contact/site handoff tied to Scout's discovery.",
             )
 
-        verified_no_website = bool(lead.notes.get("verified_no_website"))
-        website_verified = bool(lead.notes.get("website_verified"))
-        observations = tuple(
-            item.strip()
-            for item in lead.notes.get("website_observations", ())
-            if isinstance(item, str) and item.strip()
-        )
+        # The signed handoff is canonical. Rebuild the mirrored convenience
+        # fields before downstream workers read them so stale/tampered notes
+        # cannot drift Qualifier or Personalizer away from Researcher's evidence.
+        lead.email = handoff.contact_email
+        lead.website = handoff.website
+        lead.notes["contact_verified"] = handoff.contact_verified
+        lead.notes["website_verified"] = handoff.website_verified
+        lead.notes["verified_no_website"] = handoff.verified_no_website
+        lead.notes["website_observations"] = list(handoff.website_observations)
+        lead.notes["research_evidence_urls"] = list(handoff.evidence_urls)
 
-        if verified_no_website:
-            valid_site_evidence = not bool(lead.website)
+        if handoff.verified_no_website:
+            valid_site_evidence = not bool(handoff.website)
         else:
-            valid_site_evidence = bool(lead.website) and website_verified and len(observations) >= 2
+            valid_site_evidence = bool(
+                handoff.website
+                and handoff.website_verified
+                and len(handoff.website_observations) >= 2
+            )
 
-        contact_verified = bool(lead.email and lead.notes.get("contact_verified", False))
+        contact_verified = bool(handoff.contact_email and handoff.contact_verified)
         research_verified = valid_site_evidence and contact_verified
-        lead.notes["website_observations"] = list(observations)
         lead.notes["research_verified"] = research_verified
 
         if not research_verified:
@@ -136,14 +144,16 @@ class Qualifier:
             return _stage(self.name, STATUS_BLOCKED, "Lead is suppressed or opted out.")
 
         if lead.source == "internal_gmail_test":
-            lead.notes["qualified"] = bool(lead.email)
+            lead.notes["qualified"] = bool(lead.email.strip())
+            if not lead.notes["qualified"]:
+                return _stage(self.name, STATUS_BLOCKED, "Internal test recipient email is missing.")
             return _stage(self.name, STATUS_COMPLETE, "Approved safe internal self-test.")
 
         evidence_score = 0
-        evidence_score += int(bool(lead.email))
-        evidence_score += int(bool(lead.company or lead.name))
+        evidence_score += int(bool(lead.email.strip()))
+        evidence_score += int(bool((lead.company or lead.name).strip()))
         evidence_score += int(bool(lead.notes.get("research_verified")))
-        evidence_score += int(bool(lead.notes.get("verified_no_website") or lead.website))
+        evidence_score += int(bool(lead.notes.get("verified_no_website") or lead.website.strip()))
         qualified = evidence_score == 4
         lead.notes["qualification_score"] = evidence_score
         lead.notes["qualified"] = qualified
@@ -160,7 +170,7 @@ class Personalizer:
         if not lead.notes.get("qualified"):
             return _stage(self.name, STATUS_SKIPPED, "Qualifier did not approve this lead.")
 
-        first_name = (lead.name or "there").split()[0]
+        first_name = first_name_token(lead.name)
         try:
             if lead.source == "google_maps":
                 context = OutreachContext(
@@ -186,7 +196,7 @@ class Personalizer:
                     f"{professional_signature()}"
                 )
                 output = "Created personalized internal test email."
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             lead.notes.pop("subject", None)
             lead.notes.pop("body", None)
             return _stage(self.name, STATUS_FAILED, f"Personalization failed closed: {exc}")
@@ -221,6 +231,26 @@ class SalesBot:
                 "External outreach is missing a valid digest-bound clearance for this recipient and research evidence.",
             )
         return _stage(self.name, STATUS_COMPLETE, "Approved message for delivery adapter submission.")
+
+    def deliver_outreach(self, result: PipelineResult, *, client):
+        """Own the final outbound submission after all six workers revalidate it."""
+        lead = result.lead
+        if not result.approved_to_send or not lead.notes.get("pipeline_passed"):
+            raise ValueError("Sales Bot delivery requires Manager approval.")
+        if lead.notes.get("suppressed") or lead.notes.get("opted_out"):
+            raise ValueError("Sales Bot delivery rejected: lead is suppressed.")
+        destination = (lead.email or "").strip().lower()
+        if not destination or "@" not in destination or len(destination) > 320:
+            raise ValueError("Sales Bot delivery requires a valid recipient email.")
+        if lead.notes.get("subject") != result.subject or lead.notes.get("body") != result.body:
+            raise ValueError("Sales Bot delivery rejected: approved message drifted after Personalizer review.")
+        if lead.source != "internal_gmail_test" and not verify_outreach_clearance(lead):
+            raise ValueError("Sales Bot delivery rejected: outreach clearance is no longer valid.")
+        return client.send(
+            to=destination,
+            subject=result.subject,
+            body=result.body,
+        )
 
     def send_invoice_link(
         self,
@@ -263,18 +293,21 @@ class Manager:
     name = "Manager"
 
     def run(self, lead: Lead, prior_stages: list[dict[str, Any]]) -> dict[str, Any]:
-        blocking = [
-            stage for stage in prior_stages
-            if stage["status"] in {STATUS_BLOCKED, STATUS_FAILED, STATUS_SKIPPED}
+        root_blockers = [
+            stage
+            for stage in prior_stages
+            if stage["status"] in {STATUS_BLOCKED, STATUS_FAILED}
         ]
-        passed = not blocking and bool(lead.notes.get("approved_to_send"))
+        skipped = [stage for stage in prior_stages if stage["status"] == STATUS_SKIPPED]
+        passed = not root_blockers and not skipped and bool(lead.notes.get("approved_to_send"))
         lead.notes["pipeline_passed"] = passed
         return _stage(
             self.name,
             STATUS_COMPLETE,
             "Pipeline passed all pre-send controls." if passed else "Pipeline stopped safely before delivery.",
             pipeline_passed=passed,
-            blocked_by=[stage["employee"] for stage in blocking],
+            blocked_by=[stage["employee"] for stage in root_blockers],
+            skipped_employees=[stage["employee"] for stage in skipped],
         )
 
 
