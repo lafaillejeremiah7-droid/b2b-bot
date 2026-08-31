@@ -54,11 +54,11 @@ def first_pending_invoice() -> PendingInvoiceApproval | None:
 
 def integration_readiness() -> tuple[IntegrationReadiness, ...]:
     """Report configuration truth without exposing or persisting credentials."""
-    gmail_ready = bool(
-        settings.OUTREACH_EMAIL
-        and settings.GMAIL_OAUTH_CLIENT_ID
-        and settings.GMAIL_OAUTH_CLIENT_SECRET
-        and settings.GMAIL_OAUTH_REFRESH_TOKEN
+    yahoo_ready = bool(
+        settings.YAHOO_SMTP_HOST
+        and settings.YAHOO_SMTP_PORT
+        and settings.YAHOO_SMTP_USERNAME
+        and settings.YAHOO_SMTP_APP_PASSWORD
     )
     return (
         IntegrationReadiness(
@@ -77,8 +77,8 @@ def integration_readiness() -> tuple[IntegrationReadiness, ...]:
             purpose="Professional email signature",
         ),
         IntegrationReadiness(
-            name="Gmail OAuth",
-            configured=gmail_ready,
-            purpose="Sales Bot and delivery email; credentials stay in deployment secrets",
+            name="Yahoo Business SMTP",
+            configured=yahoo_ready,
+            purpose="Sales Bot invoice/outreach and final delivery email",
         ),
     )
