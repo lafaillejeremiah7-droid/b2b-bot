@@ -132,6 +132,14 @@ class Invoice(models.Model):
     provider_invoice_id = models.TextField(null=True, blank=True, unique=True)
     hosted_invoice_url = models.TextField(null=True, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
+    sent_by_operator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="sent_invoices",
+        db_column="sent_by_operator_id",
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         db_table = "invoices"
