@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hmac
 import json
 from datetime import date
 
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import Http404, JsonResponse
@@ -23,6 +25,7 @@ from dashboard.services.pipeline_state import PipelineStateMachine
 from dashboard.services.pricing import PriceService, recommendation_for
 from dashboard.services.screens import DealRoomService, LeadListService, NotificationListService
 from dashboard.services.site_review import SiteReviewGate
+from dashboard.services.stripe_webhooks import StripeWebhookError, StripeWebhookIntake
 
 
 def _redirect_deal(lead_id: int):
@@ -318,9 +321,21 @@ def notifications_view(request):
     return render(request, "dashboard/notifications.html", {"page": page})
 
 
+def _pipeline_event_authorized(request) -> bool:
+    expected = settings.PIPELINE_EVENT_SECRET.strip()
+    supplied = request.headers.get("X-Pipeline-Event-Secret", "").strip()
+    return bool(expected and supplied and hmac.compare_digest(expected, supplied))
+
+
 @csrf_exempt
 @require_POST
 def inbound_event(request):
+    if not _pipeline_event_authorized(request):
+        status = 503 if not settings.PIPELINE_EVENT_SECRET.strip() else 401
+        return JsonResponse(
+            {"accepted": False, "reason": "pipeline event authentication failed"},
+            status=status,
+        )
     try:
         payload = json.loads(request.body.decode("utf-8"))
         if not isinstance(payload, dict):
@@ -335,4 +350,27 @@ def inbound_event(request):
             "reason": outcome.rejection_reason,
         },
         status=200 if outcome.accepted else 400,
+    )
+
+
+@csrf_exempt
+@require_POST
+def stripe_webhook(request):
+    try:
+        outcome = StripeWebhookIntake.handle(
+            request.body,
+            request.headers.get("Stripe-Signature", ""),
+        )
+    except StripeWebhookError as exc:
+        status = 503 if "not configured" in str(exc).lower() else 400
+        return JsonResponse({"accepted": False, "reason": str(exc)}, status=status)
+
+    return JsonResponse(
+        {
+            "accepted": outcome.accepted,
+            "ignored": outcome.ignored,
+            "duplicate": outcome.duplicate,
+            "reason": outcome.reason,
+        },
+        status=200 if outcome.accepted else 409,
     )
