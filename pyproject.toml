@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "b2b-bot"
 version = "0.1.0"
-description = "Six-worker B2B lead generation and deal-room automation platform"
+description = "Eight-employee B2B lead generation and deal-room automation platform"
 requires-python = ">=3.12"
 dependencies = [
   "Django>=5.1,<5.3",
@@ -13,6 +13,8 @@ dependencies = [
   "celery>=5.4,<6",
   "redis>=5,<7",
   "django-htmx>=1.21,<2",
+  "gunicorn>=23,<24",
+  "whitenoise>=6.8,<7",
 ]
 
 [project.optional-dependencies]
