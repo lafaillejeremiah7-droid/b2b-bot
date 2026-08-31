@@ -31,11 +31,16 @@ class CloserDecision:
 
 
 class Closer:
-    """Employee #7: classify replies and produce a fail-closed next action.
+    """Employee #7: classify replies and own the post-win invoice-link step.
 
     The Closer never auto-sends substantive sales replies. It carries lead/thread
     identifiers forward so the persistence layer can suppress follow-ups on the
     exact prospect rather than treating stop_followups as an in-memory suggestion.
+
+    Once a Deal is already won and the operator approves the invoice action, the
+    Closer may ask Stripe to create/finalize the invoice and return the Hosted
+    Invoice Page URL. It never emails that URL; customer delivery belongs to
+    Sales Bot #5.
     """
 
     name = "Closer"
@@ -83,6 +88,35 @@ class Closer:
         "price is high",
         "cost is high",
     )
+
+    def generate_invoice_link(
+        self,
+        *,
+        client,
+        local_invoice_id: int,
+        recipient_email: str,
+        customer_name: str,
+        amount_usd: int,
+        description: str,
+    ):
+        """Generate the secure Stripe invoice link without sending an email."""
+        destination = (recipient_email or "").strip().lower()
+        if not destination or "@" not in destination:
+            raise ValueError("Closer requires a valid invoice recipient email.")
+        if isinstance(amount_usd, bool) or not isinstance(amount_usd, int) or amount_usd <= 0:
+            raise ValueError("Closer requires a positive whole-dollar invoice amount.")
+        receipt = client.create_invoice_link(
+            local_invoice_id=local_invoice_id,
+            recipient_email=destination,
+            customer_name=(customer_name or destination).strip(),
+            amount_usd=amount_usd,
+            description=description,
+        )
+        if not getattr(receipt, "provider_invoice_id", ""):
+            raise ValueError("Stripe invoice generation returned no provider invoice ID.")
+        if not getattr(receipt, "hosted_invoice_url", ""):
+            raise ValueError("Stripe invoice generation returned no hosted invoice URL.")
+        return receipt
 
     def classify(self, reply_text: str) -> tuple[ReplyCategory, float]:
         text = " ".join((reply_text or "").lower().split())
