@@ -54,6 +54,12 @@ def first_pending_invoice() -> PendingInvoiceApproval | None:
 
 def integration_readiness() -> tuple[IntegrationReadiness, ...]:
     """Report configuration truth without exposing or persisting credentials."""
+    gmail_ready = bool(
+        settings.OUTREACH_EMAIL
+        and settings.GMAIL_OAUTH_CLIENT_ID
+        and settings.GMAIL_OAUTH_CLIENT_SECRET
+        and settings.GMAIL_OAUTH_REFRESH_TOKEN
+    )
     return (
         IntegrationReadiness(
             name="Google Places",
@@ -72,7 +78,7 @@ def integration_readiness() -> tuple[IntegrationReadiness, ...]:
         ),
         IntegrationReadiness(
             name="Gmail OAuth",
-            configured=None,
-            purpose="Injected at send runtime; never stored in the repo",
+            configured=gmail_ready,
+            purpose="Sales Bot and delivery email; credentials stay in deployment secrets",
         ),
     )
