@@ -1,3 +1,4 @@
+import pytest
 from django.test import override_settings
 
 from dashboard.services.discovery_handoff import (
@@ -159,6 +160,72 @@ def test_tampered_research_handoff_is_blocked_at_researcher():
     assert statuses["Qualifier"] == "skipped"
 
 
+def test_malformed_research_handoff_fails_closed_instead_of_crashing():
+    lead = verified_website_lead()
+    lead.notes["research_handoff"]["website_observations"] = [123]
+
+    result = SixEmployeePipeline().run(lead)
+
+    statuses = {stage["employee"]: stage["status"] for stage in result.stages}
+    assert result.approved_to_send is False
+    assert statuses["Scout"] == "complete"
+    assert statuses["Researcher"] == "blocked"
+    assert statuses["Qualifier"] == "skipped"
+
+
+def test_researcher_rebuilds_tampered_mirror_fields_from_signed_handoff():
+    lead = verified_website_lead()
+    lead.notes["website_observations"] = ["INJECTED CLAIM", "ANOTHER INJECTED CLAIM"]
+    lead.notes["website_verified"] = False
+    lead.notes["verified_no_website"] = True
+
+    result = SixEmployeePipeline().run(lead)
+
+    assert result.approved_to_send is True
+    assert "INJECTED CLAIM" not in result.body
+    assert "The primary quote action" in result.body
+    assert lead.notes["website_verified"] is True
+    assert lead.notes["verified_no_website"] is False
+
+
+def test_researcher_cannot_switch_scout_website_path_to_no_website():
+    lead = Lead(name="Alex", email="", source="google_maps")
+    scout = ScoutHandoff(
+        place_reference="place-789",
+        business_name="Path Locked Co",
+        candidate_website="https://path.example",
+    )
+    apply_scout_handoff(lead, scout)
+
+    with pytest.raises(ValueError, match="candidate website path"):
+        apply_research_handoff(
+            lead,
+            ResearchHandoff(
+                scout_digest=scout.digest,
+                contact_email="owner@example.com",
+                verified_no_website=True,
+                contact_verified=True,
+            ),
+        )
+
+
+def test_no_website_scout_rejects_stale_manual_website_state():
+    lead = Lead(
+        name="Taylor",
+        email="",
+        company="No Site Co",
+        website="https://stale.example",
+        source="google_maps",
+    )
+    scout = ScoutHandoff(
+        place_reference="place-no-site",
+        business_name="No Site Co",
+    )
+
+    with pytest.raises(ValueError, match="website does not match"):
+        apply_scout_handoff(lead, scout)
+
+
 def test_missing_google_maps_handoff_blocks_and_skips_downstream_workers():
     result = SixEmployeePipeline().run(
         Lead(
@@ -176,7 +243,14 @@ def test_missing_google_maps_handoff_blocks_and_skips_downstream_workers():
     assert statuses["Qualifier"] == "skipped"
     assert statuses["Personalizer"] == "skipped"
     assert statuses["Sales Bot"] == "skipped"
-    assert result.stages[-1]["blocked_by"]
+    manager = result.stages[-1]
+    assert manager["blocked_by"] == ["Scout"]
+    assert manager["skipped_employees"] == [
+        "Researcher",
+        "Qualifier",
+        "Personalizer",
+        "Sales Bot",
+    ]
 
 
 def test_verified_external_lead_without_clearance_stops_at_sales_bot():
@@ -189,6 +263,7 @@ def test_verified_external_lead_without_clearance_stops_at_sales_bot():
     assert statuses["Qualifier"] == "complete"
     assert statuses["Personalizer"] == "complete"
     assert statuses["Sales Bot"] == "blocked"
+    assert result.stages[-1]["blocked_by"] == ["Sales Bot"]
 
 
 def test_tampered_clearance_stops_at_sales_bot():
@@ -204,6 +279,21 @@ def test_tampered_clearance_stops_at_sales_bot():
     assert statuses["Qualifier"] == "complete"
     assert statuses["Personalizer"] == "complete"
     assert statuses["Sales Bot"] == "blocked"
+
+
+@override_settings(
+    OUTREACH_SENDER_NAME="Test Sender",
+    OUTREACH_PHONE="555-0100",
+    OUTREACH_EMAIL="sender@example.com",
+)
+def test_whitespace_only_contact_name_never_crashes_personalizer():
+    lead = verified_website_lead()
+    lead.name = "   "
+
+    result = SixEmployeePipeline().run(lead)
+
+    assert result.approved_to_send is True
+    assert result.body.startswith("Hi there,")
 
 
 def test_external_recipient_without_supported_discovery_is_blocked_at_scout():
