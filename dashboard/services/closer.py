@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from urllib.parse import urlparse
 
-from dashboard.services.outreach_templates import professional_signature
+from dashboard.services.outreach_templates import first_name_token, professional_signature
 
 
 class ReplyCategory(StrEnum):
@@ -101,21 +102,24 @@ class Closer:
     ):
         """Generate the secure Stripe invoice link without sending an email."""
         destination = (recipient_email or "").strip().lower()
-        if not destination or "@" not in destination:
+        if not destination or "@" not in destination or len(destination) > 320:
             raise ValueError("Closer requires a valid invoice recipient email.")
-        if isinstance(amount_usd, bool) or not isinstance(amount_usd, int) or amount_usd <= 0:
-            raise ValueError("Closer requires a positive whole-dollar invoice amount.")
+        if isinstance(amount_usd, bool) or not isinstance(amount_usd, int) or not 1 <= amount_usd <= 1000:
+            raise ValueError("Closer requires a whole-dollar invoice amount from 1 to 1000.")
+        clean_customer_name = (customer_name or "").strip() or destination
         receipt = client.create_invoice_link(
             local_invoice_id=local_invoice_id,
             recipient_email=destination,
-            customer_name=(customer_name or destination).strip(),
+            customer_name=clean_customer_name,
             amount_usd=amount_usd,
             description=description,
         )
         if not getattr(receipt, "provider_invoice_id", ""):
             raise ValueError("Stripe invoice generation returned no provider invoice ID.")
-        if not getattr(receipt, "hosted_invoice_url", ""):
-            raise ValueError("Stripe invoice generation returned no hosted invoice URL.")
+        hosted_url = str(getattr(receipt, "hosted_invoice_url", "") or "").strip()
+        parsed = urlparse(hosted_url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("Stripe invoice generation returned no valid HTTPS hosted invoice URL.")
         return receipt
 
     def classify(self, reply_text: str) -> tuple[ReplyCategory, float]:
@@ -143,7 +147,7 @@ class Closer:
         thread_id: str = "",
     ) -> CloserDecision:
         category, confidence = self.classify(reply_text)
-        name = (first_name or "there").strip().split()[0]
+        name = first_name_token(first_name)
         signature = professional_signature()
         context = {"lead_id": lead_id, "thread_id": thread_id}
 
