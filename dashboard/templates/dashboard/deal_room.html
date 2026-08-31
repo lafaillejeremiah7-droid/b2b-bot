@@ -28,7 +28,7 @@
     {% if invoice %}
       <p><strong>{{ invoice.invoice_number }}</strong><br>${{ invoice.amount }} · {{ invoice.issued_at }}</p>
       {% if invoice.sent_at %}
-        <p class="ok">Sent {{ invoice.sent_at }} to {{ invoice.recipient_email }}</p>
+        <p class="ok">Sales Bot sent the invoice link {{ invoice.sent_at }} to {{ invoice.recipient_email }}</p>
         {% if invoice.hosted_invoice_url %}<p><a href="{{ invoice.hosted_invoice_url }}" target="_blank" rel="noopener">Open Stripe invoice ↗</a></p>{% endif %}
       {% else %}
         <p class="muted">Ready, but not emailed. Sending requires your Yes approval.</p>
@@ -51,7 +51,7 @@
   <div class="panel" style="width:min(560px,100%);box-shadow:0 30px 90px rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14)">
     <div class="pill">Invoice ready</div>
     <h2 style="font-size:28px;margin-bottom:8px">Send invoice to customer?</h2>
-    <p class="muted">Stripe will only email this invoice if you choose Yes.</p>
+    <p class="muted">If you choose Yes, Closer #7 generates/finalizes the secure Stripe invoice link and Sales Bot #5 emails that link to the customer. Stripe itself does not send the email.</p>
     <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;margin:22px 0">
       <strong>Customer</strong><span>{{ lead.contact_name|default:lead.company_name }}</span>
       <strong>Amount</strong><span>${{ invoice.amount }}</span>
@@ -63,7 +63,7 @@
       <button type="submit">Yes — Send Invoice</button>
       <button type="button" onclick="document.getElementById('invoice-send-prompt').style.display='none'">Not Now</button>
     </form>
-    <p class="muted" style="margin-top:16px;font-size:13px">A repeated click or retry cannot create a duplicate Stripe invoice for this local invoice.</p>
+    <p class="muted" style="margin-top:16px;font-size:13px">Retries reuse the same Stripe invoice identity and the same Sales Bot email idempotency key.</p>
   </div>
 </div>
 {% endif %}
