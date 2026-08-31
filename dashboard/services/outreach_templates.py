@@ -16,6 +16,12 @@ class OutreachContext:
     preview_url: str = ""
 
 
+def first_name_token(value: str | None, *, default: str = "there") -> str:
+    """Return a safe first token without crashing on blank/whitespace input."""
+    tokens = (value or "").strip().split()
+    return tokens[0] if tokens else default
+
+
 def professional_signature() -> str:
     sender = getattr(settings, "OUTREACH_SENDER_NAME", "Jeremiah Lafaille").strip()
     phone = getattr(settings, "OUTREACH_PHONE", "").strip()
@@ -41,7 +47,7 @@ def render_invoice_link_email(
     hosted_invoice_url: str,
 ) -> tuple[str, str]:
     """Render the Sales Bot's customer-facing invoice-link message."""
-    name = (first_name or "there").strip().split()[0]
+    name = first_name_token(first_name)
     company = (company_name or "").strip()
     invoice_url = (hosted_invoice_url or "").strip()
     if not invoice_url.startswith("https://"):
@@ -79,7 +85,7 @@ def render_google_maps_outreach(context: OutreachContext) -> tuple[str, str]:
     if context.source != "google_maps":
         raise ValueError("This renderer is reserved for verified Google Maps leads.")
 
-    first_name = (context.first_name or "there").strip().split()[0]
+    first_name = first_name_token(context.first_name)
     business_name = context.business_name.strip()
     signature = professional_signature()
 
