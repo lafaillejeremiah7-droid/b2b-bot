@@ -11,8 +11,7 @@ from django.conf import settings
 
 from dashboard.models import AdapterInvocation, AdapterOperationName, AdapterResultStatus
 
-from .gmail_delivery import GmailDeliveryError
-from .gmail_oauth import GmailOAuthError, get_gmail_delivery_client, gmail_oauth_configured
+from .yahoo_smtp import YahooSMTPError, get_yahoo_smtp_client, yahoo_smtp_configured
 
 
 @dataclass(frozen=True)
@@ -91,9 +90,9 @@ class StubPipelineAdapter(PipelineAdapter):
 class LivePipelineAdapter(StubPipelineAdapter):
     """Live provider boundary.
 
-    Prospect and delivery email are submitted through Gmail using a refresh-token
-    OAuth provider. Invoice creation remains a local-draft operation; Stripe is
-    touched only by InvoiceSendGate after the operator approves the invoice link.
+    Prospect and delivery email are submitted through the configured business
+    Yahoo mailbox over SMTP. Invoice creation remains a local-draft operation;
+    Stripe is touched only by InvoiceSendGate after operator approval.
     Unconfigured operations fail closed rather than pretending to run.
     """
 
@@ -102,34 +101,40 @@ class LivePipelineAdapter(StubPipelineAdapter):
         return AdapterResult("failure", failure_reason=f"{operation} is not configured")
 
     @staticmethod
-    def _gmail_ready() -> bool:
-        return bool(settings.OUTREACH_EMAIL.strip()) and gmail_oauth_configured()
+    def _yahoo_ready() -> bool:
+        return yahoo_smtp_configured()
 
     @classmethod
-    def _send_gmail(cls, *, to_email: str, subject: str, body: str) -> AdapterResult:
-        if not cls._gmail_ready():
-            return cls._not_configured("Gmail OAuth/outbound sender")
+    def _send_yahoo(
+        cls,
+        *,
+        to_email: str,
+        subject: str,
+        body: str,
+        idempotency_key: UUID | str,
+    ) -> AdapterResult:
+        if not cls._yahoo_ready():
+            return cls._not_configured("Yahoo business SMTP sender")
         try:
-            receipt = get_gmail_delivery_client().send(
+            receipt = get_yahoo_smtp_client().send(
                 to=to_email,
                 subject=subject,
                 body=body,
+                idempotency_key=idempotency_key,
             )
-        except (GmailOAuthError, GmailDeliveryError, ValueError) as exc:
+        except (YahooSMTPError, ValueError) as exc:
             return AdapterResult("failure", failure_reason=str(exc)[:500])
-        return AdapterResult(
-            "success",
-            payload={"message_id": receipt.message_id, "thread_id": receipt.thread_id},
-        )
+        return AdapterResult("success", payload={"message_id": receipt.message_id})
 
     def generate_site_preview(self, **kwargs) -> AdapterResult:
         return self._not_configured("site-preview provider")
 
     def send_prospect_email(self, **kwargs) -> AdapterResult:
-        return self._send_gmail(
+        return self._send_yahoo(
             to_email=str(kwargs.get("to_email") or ""),
             subject=str(kwargs.get("subject") or ""),
             body=str(kwargs.get("body") or ""),
+            idempotency_key=kwargs.get("idempotency_key") or "",
         )
 
     def send_delivery_email(self, **kwargs) -> AdapterResult:
@@ -144,10 +149,11 @@ class LivePipelineAdapter(StubPipelineAdapter):
             "Thank you for working with us.\n\n"
             f"Best,\n{sender_name}\nWebsite Design & Digital Presence"
         )
-        return self._send_gmail(
+        return self._send_yahoo(
             to_email=str(kwargs.get("to_email") or ""),
             subject="Your website delivery is ready",
             body=body,
+            idempotency_key=kwargs.get("idempotency_key") or "",
         )
 
     def create_invoice(self, **kwargs) -> AdapterResult:
