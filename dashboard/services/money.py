@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 from django.db import IntegrityError, transaction
@@ -91,6 +92,49 @@ def _transition_with_existing_audit(
     lead.last_activity_at = occurred_at
 
 
+def _validated_email(value: str) -> str:
+    email = (value or "").strip().lower()
+    if not email or "@" not in email or len(email) > 320:
+        raise ValidationRejected("The Lead has no valid contact email for delivery.")
+    local, _, domain = email.partition("@")
+    if not local or not domain or "." not in domain:
+        raise ValidationRejected("The Lead has no valid contact email for delivery.")
+    return email
+
+
+def _validated_archive_link(value: str) -> str:
+    link = (value or "").strip()
+    parsed = urlparse(link)
+    if parsed.scheme != "https" or not parsed.netloc or len(link) > 2048:
+        raise ValidationRejected("Delivery archive link must be a valid HTTPS URL no longer than 2048 characters.")
+    return link
+
+
+def _release_audit(authorization: ReleaseAuthorization):
+    return authorization.operator.audit_entries.filter(
+        action_type=AuditActionType.RELEASE_AUTHORIZATION,
+        target_type="releaseauthorization",
+        target_id=authorization.id,
+    ).order_by("-occurred_at", "-id").first()
+
+
+def _release_snapshot(authorization: ReleaseAuthorization):
+    audit = _release_audit(authorization)
+    after = audit.after_value if audit is not None and isinstance(audit.after_value, dict) else {}
+    recipient = str(after.get("recipient_email") or "").strip().lower()
+    archive_link = str(after.get("archive_link") or "").strip()
+    raw_key = str(after.get("delivery_idempotency_key") or "").strip()
+    if not recipient or not archive_link or not raw_key:
+        raise ValidationRejected(
+            "Release authorization is missing its immutable delivery snapshot and cannot be retried safely."
+        )
+    try:
+        key = UUID(raw_key)
+    except (TypeError, ValueError) as exc:
+        raise ValidationRejected("Release authorization has an invalid delivery identity.") from exc
+    return audit, _validated_email(recipient), _validated_archive_link(archive_link), key
+
+
 class InvoiceManager:
     @staticmethod
     def create_invoice(*, deal_id: int, operator: Operator, idempotency_key: UUID | None = None) -> InvoiceOutcome:
@@ -117,18 +161,24 @@ class InvoiceManager:
         if result.status != "success":
             return InvoiceOutcome(None, result, key)
 
-        # Phase 3: persist only after provider success. Uniqueness collapses races.
+        # Phase 3: persist only if the exact locked commercial facts are still
+        # current. This prevents an adapter response for one price from being
+        # paired with a local invoice created after the agreed price changed.
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
             existing = Invoice.objects.filter(deal_id=deal.pk).first()
             if existing is not None:
                 return InvoiceOutcome(existing, result, key)
+            if deal.lead.status != PipelineState.WON:
+                raise ValidationRejected("Deal state changed while invoice creation was in progress; retry the action.")
+            if deal.agreed_price != amount:
+                raise ValidationRejected("Agreed price changed while invoice creation was in progress; retry the action.")
             invoice_number = str(result.payload.get("invoice_number") or f"INV-{deal.pk}-{str(key)[:8]}")
             try:
                 invoice = Invoice.objects.create(
                     deal=deal,
                     invoice_number=invoice_number[:200],
-                    amount=deal.agreed_price,
+                    amount=amount,
                 )
             except IntegrityError:
                 invoice = Invoice.objects.get(deal_id=deal.pk)
@@ -170,6 +220,12 @@ class PaymentService:
             defaults={"deal": deal, "amount_usd": amount_usd, "paid_date": paid_date},
         )
         if not created:
+            if (
+                payment.deal_id != deal.pk
+                or payment.amount_usd != amount_usd
+                or payment.paid_date != paid_date
+            ):
+                raise ValidationRejected("Payment event_id was replayed with different payment facts.")
             return payment, None
 
         deal.payment_received = True
@@ -279,7 +335,51 @@ class PaymentVerifier:
 
 class ReleaseGate:
     @staticmethod
+    def _submit_snapshot(
+        *,
+        authorization: ReleaseAuthorization,
+        audit,
+        operator: Operator,
+        recipient_email: str,
+        archive_link: str,
+        delivery_key: UUID,
+    ) -> ReleaseOutcome:
+        result = get_pipeline_adapter().send_delivery_email(
+            deal_id=authorization.deal_id,
+            to_email=recipient_email,
+            archive_link=archive_link,
+            idempotency_key=delivery_key,
+        )
+        if result.status != "success":
+            return ReleaseOutcome(authorization, result)
+
+        with transaction.atomic():
+            deal = Deal.objects.select_for_update().select_related("lead").get(pk=authorization.deal_id)
+            authorization = ReleaseAuthorization.objects.select_related("operator").get(pk=authorization.pk)
+            if deal.delivery_sent is True:
+                return ReleaseOutcome(authorization, result, already_authorized=True)
+            if deal.payment_verified_at is None:
+                raise ValidationRejected("Payment verification disappeared before delivery could be recorded.")
+            if deal.lead.status != PipelineState.PAYMENT_VERIFIED:
+                raise ValidationRejected("Pipeline state changed before delivery could be recorded.")
+            delivered_at = timezone.now()
+            deal.delivery_sent = True
+            deal.delivered_date = delivered_at
+            deal.save(update_fields=["delivery_sent", "delivered_date"])
+            # The authorization, not the retrying operator, is the human action
+            # that permits release. Keep history actor and audit actor aligned.
+            _transition_with_existing_audit(
+                lead=deal.lead,
+                target=PipelineState.RELEASED,
+                actor=authorization.operator,
+                audit_entry=audit,
+                occurred_at=delivered_at,
+            )
+        return ReleaseOutcome(authorization, result)
+
+    @classmethod
     def authorize_release(
+        cls,
         *,
         deal_id: int,
         operator: Operator,
@@ -289,107 +389,107 @@ class ReleaseGate:
         idempotency_key: UUID | None = None,
     ) -> ReleaseOutcome:
         Authz.check(operator, Action.RELEASE_AUTHORIZE)
+        requested_archive = _validated_archive_link(archive_link)
         consume_confirmation(session, token=confirmation_token, action="release.authorize", target_id=deal_id)
-        key = idempotency_key or uuid4()
+        requested_key = idempotency_key or uuid4()
 
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-            # Requirement 8.9: verification is checked before state.
             if deal.payment_verified_at is None:
                 raise ValidationRejected("Payment verification outstanding.")
             if deal.lead.status != PipelineState.PAYMENT_VERIFIED:
+                if deal.delivery_sent is True and deal.lead.status == PipelineState.RELEASED:
+                    authorization = ReleaseAuthorization.objects.get(deal_id=deal.pk)
+                    return ReleaseOutcome(authorization, None, already_authorized=True)
                 raise ValidationRejected("Release requires Pipeline_State Payment_Verified.")
-            existing = ReleaseAuthorization.objects.filter(deal_id=deal.pk).first()
+
+            existing = (
+                ReleaseAuthorization.objects.select_related("operator")
+                .filter(deal_id=deal.pk)
+                .first()
+            )
             if existing is not None:
-                return ReleaseOutcome(existing, None, already_authorized=True)
-            authorized_at = timezone.now()
-            try:
-                authorization = ReleaseAuthorization.objects.create(
-                    deal=deal,
-                    operator=operator,
-                    authorized_at=authorized_at,
-                )
-            except IntegrityError:
-                authorization = ReleaseAuthorization.objects.get(deal_id=deal.pk)
-                return ReleaseOutcome(authorization, None, already_authorized=True)
-            audit = AuditLogger.record(
-                operator,
-                AuditActionType.RELEASE_AUTHORIZATION,
-                authorization,
-                None,
-                {"deal_id": deal.pk, "authorized_at": authorized_at.isoformat()},
-                occurred_at=authorized_at,
-            )
-            to_email = deal.lead.contact_email
-            if not to_email:
-                raise ValidationRejected("The Lead has no contact email for delivery.")
+                if deal.delivery_sent is True:
+                    return ReleaseOutcome(existing, None, already_authorized=True)
+                audit, recipient_email, authorized_archive, delivery_key = _release_snapshot(existing)
+                if requested_archive != authorized_archive:
+                    raise ValidationRejected(
+                        "A pending release retry must use the exact archive link that was originally authorized."
+                    )
+                authorization = existing
+            else:
+                recipient_email = _validated_email(deal.lead.contact_email)
+                authorized_archive = requested_archive
+                delivery_key = requested_key
+                authorized_at = timezone.now()
+                try:
+                    authorization = ReleaseAuthorization.objects.create(
+                        deal=deal,
+                        operator=operator,
+                        authorized_at=authorized_at,
+                    )
+                except IntegrityError:
+                    authorization = ReleaseAuthorization.objects.select_related("operator").get(deal_id=deal.pk)
+                    audit, recipient_email, authorized_archive, delivery_key = _release_snapshot(authorization)
+                    if requested_archive != authorized_archive:
+                        raise ValidationRejected(
+                            "A concurrent release authorization already fixed a different archive link."
+                        )
+                else:
+                    audit = AuditLogger.record(
+                        operator,
+                        AuditActionType.RELEASE_AUTHORIZATION,
+                        authorization,
+                        None,
+                        {
+                            "deal_id": deal.pk,
+                            "authorized_at": authorized_at.isoformat(),
+                            "recipient_email": recipient_email,
+                            "archive_link": authorized_archive,
+                            "delivery_idempotency_key": str(delivery_key),
+                        },
+                        occurred_at=authorized_at,
+                    )
 
-        result = get_pipeline_adapter().send_delivery_email(
-            deal_id=deal_id,
-            to_email=to_email,
-            archive_link=archive_link,
-            idempotency_key=key,
+        return cls._submit_snapshot(
+            authorization=authorization,
+            audit=audit,
+            operator=operator,
+            recipient_email=recipient_email,
+            archive_link=authorized_archive,
+            delivery_key=delivery_key,
         )
-        if result.status != "success":
-            return ReleaseOutcome(authorization, result)
 
-        with transaction.atomic():
-            deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-            delivered_at = timezone.now()
-            deal.delivery_sent = True
-            deal.delivered_date = delivered_at
-            deal.save(update_fields=["delivery_sent", "delivered_date"])
-            # Reuse the release-authorization audit row: one human action, one audit.
-            _transition_with_existing_audit(
-                lead=deal.lead,
-                target=PipelineState.RELEASED,
-                actor=operator,
-                audit_entry=audit,
-                occurred_at=delivered_at,
-            )
-        return ReleaseOutcome(authorization, result)
-
-    @staticmethod
+    @classmethod
     def retry_delivery(
+        cls,
         *,
         deal_id: int,
         operator: Operator,
         archive_link: str,
         idempotency_key: UUID,
     ) -> ReleaseOutcome:
+        """Compatibility retry API locked to the original authorization snapshot."""
         Authz.check(operator, Action.RELEASE_AUTHORIZE)
+        requested_archive = _validated_archive_link(archive_link)
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-            authorization = ReleaseAuthorization.objects.get(deal_id=deal.pk)
+            authorization = ReleaseAuthorization.objects.select_related("operator").get(deal_id=deal.pk)
             if deal.delivery_sent is True:
                 return ReleaseOutcome(authorization, None, already_authorized=True)
-            if not deal.lead.contact_email:
-                raise ValidationRejected("The Lead has no contact email for delivery.")
-            audit = authorization.operator.audit_entries.filter(
-                action_type=AuditActionType.RELEASE_AUTHORIZATION,
-                target_type="releaseauthorization",
-                target_id=authorization.id,
-            ).order_by("-occurred_at", "-id").first()
+            if deal.payment_verified_at is None or deal.lead.status != PipelineState.PAYMENT_VERIFIED:
+                raise ValidationRejected("Release retry requires an unmodified Payment_Verified deal.")
+            audit, recipient_email, authorized_archive, delivery_key = _release_snapshot(authorization)
+            if requested_archive != authorized_archive:
+                raise ValidationRejected("Release retry cannot change the originally authorized archive link.")
+            if idempotency_key != delivery_key:
+                raise ValidationRejected("Release retry cannot change the original delivery idempotency key.")
 
-        result = get_pipeline_adapter().send_delivery_email(
-            deal_id=deal.pk,
-            to_email=deal.lead.contact_email,
-            archive_link=archive_link,
-            idempotency_key=idempotency_key,
+        return cls._submit_snapshot(
+            authorization=authorization,
+            audit=audit,
+            operator=operator,
+            recipient_email=recipient_email,
+            archive_link=authorized_archive,
+            delivery_key=delivery_key,
         )
-        if result.status == "success":
-            with transaction.atomic():
-                deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-                delivered_at = timezone.now()
-                deal.delivery_sent = True
-                deal.delivered_date = delivered_at
-                deal.save(update_fields=["delivery_sent", "delivered_date"])
-                if deal.lead.status == PipelineState.PAYMENT_VERIFIED and audit is not None:
-                    _transition_with_existing_audit(
-                        lead=deal.lead,
-                        target=PipelineState.RELEASED,
-                        actor=operator,
-                        audit_entry=audit,
-                        occurred_at=delivered_at,
-                    )
-        return ReleaseOutcome(authorization, result)
