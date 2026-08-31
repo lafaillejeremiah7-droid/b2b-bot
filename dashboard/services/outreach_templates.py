@@ -33,6 +33,36 @@ def professional_signature() -> str:
     return "\n".join(lines)
 
 
+def render_invoice_link_email(
+    *,
+    first_name: str,
+    company_name: str,
+    amount_usd: int,
+    hosted_invoice_url: str,
+) -> tuple[str, str]:
+    """Render the Sales Bot's customer-facing invoice-link message."""
+    name = (first_name or "there").strip().split()[0]
+    company = (company_name or "").strip()
+    invoice_url = (hosted_invoice_url or "").strip()
+    if not invoice_url.startswith("https://"):
+        raise ValueError("Invoice email requires an HTTPS hosted invoice URL.")
+    if isinstance(amount_usd, bool) or not isinstance(amount_usd, int) or amount_usd <= 0:
+        raise ValueError("Invoice email requires a positive whole-dollar amount.")
+
+    subject = "Your website design invoice"
+    company_line = f" for {company}" if company else ""
+    body = (
+        f"Hi {name},\n\n"
+        f"Your invoice{company_line} is ready.\n\n"
+        f"Amount: ${amount_usd}\n"
+        f"Secure Stripe invoice: {invoice_url}\n\n"
+        "You can review the invoice and complete payment securely through Stripe using that link. "
+        "If anything on the invoice looks incorrect, reply to this email before paying.\n\n"
+        f"{professional_signature()}"
+    )
+    return subject, body
+
+
 def _preview_line(preview_url: str) -> str:
     if not preview_url:
         return "I put together a premium redesign concept specifically for your business so you can see what a stronger online presence could look like."
