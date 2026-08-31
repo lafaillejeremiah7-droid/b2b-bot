@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone as dt_timezone
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -130,6 +130,10 @@ class EventIntake:
             defaults={"event_type": event_type, "lead": lead},
         )
         if not created:
+            if claimed.event_type != event_type or claimed.lead_id != lead.id:
+                raise ValidationRejected(
+                    "event_id was already processed for a different Lead or event type"
+                )
             return EventIntakeOutcome(True, duplicate=True)
 
         if event_type in {
@@ -141,8 +145,6 @@ class EventIntake:
             if email is None:
                 raise ValidationRejected("This Lead has no email row for the event")
             if event_type == InboundEventType.PROSPECT_REPLIED:
-                # The mapped transition is part of the event; if illegal the outer
-                # transaction rolls back the engagement timestamp and claim too.
                 PipelineStateMachine.request_from_event(
                     lead_id=lead.id,
                     event_type=event_type,
