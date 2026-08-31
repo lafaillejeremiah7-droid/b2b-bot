@@ -68,6 +68,12 @@ GOOGLE_MAPS_SEARCH_PAGE_SIZE = int(os.getenv("GOOGLE_MAPS_SEARCH_PAGE_SIZE", "10
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 SERPAPI_SEARCH_MAX_RESULTS = int(os.getenv("SERPAPI_SEARCH_MAX_RESULTS", "10"))
 PREVIEW_HOST_PATTERN = os.getenv("PREVIEW_HOST_PATTERN", "preview.")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_CURRENCY = os.getenv("STRIPE_CURRENCY", "usd").lower()
+STRIPE_INVOICE_DAYS_UNTIL_DUE = int(os.getenv("STRIPE_INVOICE_DAYS_UNTIL_DUE", "0"))
+STRIPE_INVOICE_DESCRIPTION = os.getenv("STRIPE_INVOICE_DESCRIPTION", "Website Design & Digital Presence")
+STRIPE_API_TIMEOUT_SECONDS = int(os.getenv("STRIPE_API_TIMEOUT_SECONDS", "20"))
 
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
