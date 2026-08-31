@@ -172,6 +172,31 @@ def test_sales_failure_keeps_stripe_link_and_retry_does_not_regenerate(monkeypat
     assert "https://invoice.stripe.test/i/123" in sales.calls[1]["body"]
 
 
+@pytest.mark.django_db
+def test_stub_mode_never_marks_invoice_email_as_sent(monkeypatch, settings):
+    operator, _lead, deal, invoice = _records()
+    stripe = FakeStripeClient()
+    monkeypatch.setattr("dashboard.services.invoice_send.get_stripe_invoice_client", lambda: stripe)
+    settings.PIPELINE_ADAPTER_MODE = "stub"
+
+    session = Session()
+    token = mint_confirmation(session, action="invoice.send", target_id=invoice.pk)
+    outcome = InvoiceSendGate.send(
+        deal_id=deal.pk,
+        operator=operator,
+        session=session,
+        confirmation_token=token,
+    )
+
+    assert outcome.sales_result.status == "failure"
+    assert "stub mode" in outcome.sales_result.failure_reason
+    invoice.refresh_from_db()
+    assert invoice.provider_invoice_id == "in_test_123"
+    assert invoice.hosted_invoice_url == "https://invoice.stripe.test/i/123"
+    assert invoice.sent_at is None
+    assert stripe.calls == 1
+
+
 def test_stripe_client_never_calls_send_endpoint(monkeypatch, settings):
     settings.STRIPE_CURRENCY = "usd"
     settings.STRIPE_INVOICE_DAYS_UNTIL_DUE = 1
