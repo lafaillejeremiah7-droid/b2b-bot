@@ -11,20 +11,34 @@ from .no_website_research import (
     SearchResult,
     SerpApiGoogleSearchClient,
 )
+from .pipeline import (
+    AdapterResult,
+    LivePipelineAdapter,
+    PipelineAdapter,
+    StubPipelineAdapter,
+    TimeoutEnforcingAdapter,
+    get_pipeline_adapter,
+)
 from .website_research import FetchedPage, WebsiteResearchClient, WebsiteResearchError
 
 __all__ = [
+    "AdapterResult",
     "DeliveryReceipt",
     "FetchedPage",
     "GmailDeliveryClient",
     "GmailDeliveryError",
     "GooglePlacesTextSearchClient",
+    "LivePipelineAdapter",
     "NoWebsiteResearchClient",
     "NoWebsiteResearchError",
+    "PipelineAdapter",
     "PlaceCandidate",
     "SearchResult",
     "SerpApiGoogleSearchClient",
+    "StubPipelineAdapter",
+    "TimeoutEnforcingAdapter",
     "WebsiteResearchClient",
     "WebsiteResearchError",
     "build_raw_message",
+    "get_pipeline_adapter",
 ]
