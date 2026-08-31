@@ -169,7 +169,7 @@ def test_sales_failure_keeps_stripe_link_and_retry_does_not_regenerate(monkeypat
     assert stripe.calls == 1
     assert len(sales.calls) == 2
     assert sales.calls[1]["idempotency_key"] == first_key
-    assert sales.calls[1]["hosted_invoice_url"] == "https://invoice.stripe.test/i/123"
+    assert "https://invoice.stripe.test/i/123" in sales.calls[1]["body"]
 
 
 def test_stripe_client_never_calls_send_endpoint(monkeypatch, settings):
