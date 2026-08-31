@@ -77,19 +77,22 @@ STRIPE_INVOICE_DAYS_UNTIL_DUE = int(os.getenv("STRIPE_INVOICE_DAYS_UNTIL_DUE", "
 STRIPE_INVOICE_DESCRIPTION = os.getenv("STRIPE_INVOICE_DESCRIPTION", "Website Design & Digital Presence")
 STRIPE_API_TIMEOUT_SECONDS = int(os.getenv("STRIPE_API_TIMEOUT_SECONDS", "20"))
 
-# Gmail uses a refresh token in deployment so Sales Bot can obtain short-lived
-# access tokens without storing any credential in the repository or database.
-GMAIL_OAUTH_CLIENT_ID = os.getenv("GMAIL_OAUTH_CLIENT_ID", "")
-GMAIL_OAUTH_CLIENT_SECRET = os.getenv("GMAIL_OAUTH_CLIENT_SECRET", "")
-GMAIL_OAUTH_REFRESH_TOKEN = os.getenv("GMAIL_OAUTH_REFRESH_TOKEN", "")
-GMAIL_OAUTH_TOKEN_TIMEOUT_SECONDS = int(os.getenv("GMAIL_OAUTH_TOKEN_TIMEOUT_SECONDS", "15"))
-GMAIL_API_TIMEOUT_SECONDS = int(os.getenv("GMAIL_API_TIMEOUT_SECONDS", "30"))
+# Sales Bot sends through the business Yahoo mailbox. The mailbox password/app
+# password is deployment-only and is never persisted in the repo or database.
+# smtp.mail.yahoo.com:465 is the normal Yahoo SSL endpoint; business/Turbify
+# accounts can override the host/port without changing application code.
+YAHOO_SMTP_HOST = os.getenv("YAHOO_SMTP_HOST", "smtp.mail.yahoo.com")
+YAHOO_SMTP_PORT = int(os.getenv("YAHOO_SMTP_PORT", "465"))
+YAHOO_SMTP_USERNAME = os.getenv("YAHOO_SMTP_USERNAME", "")
+YAHOO_SMTP_APP_PASSWORD = os.getenv("YAHOO_SMTP_APP_PASSWORD", "")
+YAHOO_SMTP_USE_SSL = os.getenv("YAHOO_SMTP_USE_SSL", "1") == "1"
+YAHOO_SMTP_TIMEOUT_SECONDS = int(os.getenv("YAHOO_SMTP_TIMEOUT_SECONDS", "30"))
 
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
 OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah Lafaille")
 OUTREACH_PHONE = os.getenv("OUTREACH_PHONE", "")
-OUTREACH_EMAIL = os.getenv("OUTREACH_EMAIL", "")
+OUTREACH_EMAIL = os.getenv("OUTREACH_EMAIL", YAHOO_SMTP_USERNAME)
 NOTIFICATION_EMAIL_FROM = os.getenv("NOTIFICATION_EMAIL_FROM", OUTREACH_EMAIL)
 
 STATIC_URL = "static/"
