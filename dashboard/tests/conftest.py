@@ -1,16 +1,9 @@
-"""Pytest fixtures that keep older schema tests valid as later tasks add FKs.
+"""Shared pytest compatibility fixtures for schema evolution.
 
-Task 2.2 deliberately introduced ``emails.outreach_request_id`` and
-``calls.outreach_request_id`` before the ``outreach_requests`` table existed.
-Task 2.3 then attached real deferred foreign keys. The Task 2.2 tests generate
-request UUIDs directly because, at the time they were written, there was no
-reservation table to seed.
-
-This fixture supplies that newly-required parent row only for
-``test_outreach_models``. It does not weaken or disable the FK; PostgreSQL still
-checks every child row against a real ``outreach_requests`` record. Keeping the
-compatibility setup here lets the Task 2.2 tests continue testing their own
-column/check/unique invariants while Task 2.3 tests the new referential layer.
+Older task-local tests intentionally asserted that later-task indexes/triggers did
+not exist yet. Once those later tasks are implemented, those negative assertions
+are historical rather than product requirements. They are skipped explicitly
+below and replaced by positive enforcement tests in ``test_schema_enforcement``.
 """
 
 from __future__ import annotations
@@ -22,20 +15,36 @@ import pytest
 from dashboard.models import OutreachRequest
 
 
+OBSOLETE_SCOPE_TESTS = {
+    "dashboard/tests/test_lead_model.py::NoIndexOrTriggerYetTests::test_only_the_primary_key_index_exists",
+    "dashboard/tests/test_lead_model.py::NoIndexOrTriggerYetTests::test_no_trigger_exists_on_leads",
+    "dashboard/tests/test_outreach_models.py::EmailIdempotencyTests::test_the_cross_table_half_of_5_12_is_not_enforced_here",
+}
+
+
+def pytest_collection_modifyitems(items):
+    marker = pytest.mark.skip(
+        reason="superseded by completed Task 2.4/3 database enforcement tests"
+    )
+    for item in items:
+        if item.nodeid in OBSOLETE_SCOPE_TESTS:
+            item.add_marker(marker)
+
+
 @pytest.fixture(autouse=True)
 def seed_outreach_request_parent_for_legacy_schema_tests(request, monkeypatch):
     """Create a matching reservation whenever the Task 2.2 tests mint a UUID.
 
-    The fixture is intentionally scoped by test-module name. No production code
-    is patched and no other test module receives synthetic reservations.
+    Task 2.2 introduced child UUID columns before Task 2.3 attached real foreign
+    keys. This fixture supplies the parent row so those tests can continue to
+    isolate their original column/check/unique invariants without weakening the
+    actual FK in PostgreSQL.
     """
 
     instance = request.instance
     if instance is None or instance.__class__.__module__ != "dashboard.tests.test_outreach_models":
         return
 
-    # Import after collection so this fixture can reuse the test module's exact
-    # clearance instant without duplicating another timestamp constant.
     from dashboard.tests import test_outreach_models as outreach_tests
 
     original_uuid4 = uuid_module.uuid4
@@ -57,6 +66,4 @@ def seed_outreach_request_parent_for_legacy_schema_tests(request, monkeypatch):
 
         return request_id
 
-    # ``test_outreach_models`` imports the stdlib uuid module, so patching its
-    # uuid4 attribute covers both helper-generated and direct raw-SQL UUIDs.
     monkeypatch.setattr(outreach_tests.uuid, "uuid4", uuid4_with_reservation)
