@@ -11,7 +11,7 @@ def test_dashboard_requires_authentication(client):
     response = client.get(reverse("company_dashboard"))
 
     assert response.status_code == 302
-    assert response.url == "/admin/login/?next=/dashboard/"
+    assert response.url == "/sign-in/?next=/dashboard/"
 
 
 @pytest.mark.django_db
