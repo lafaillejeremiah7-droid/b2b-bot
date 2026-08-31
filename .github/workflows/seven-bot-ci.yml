@@ -58,16 +58,19 @@ jobs:
           PY
       - name: Django checks
         run: |
+          set -o pipefail
           python manage.py check
-          python manage.py makemigrations --check --dry-run
+          python manage.py makemigrations --check --dry-run --verbosity 3 2>&1 | tee django-checks.txt
       - name: Migrate PostgreSQL
         run: python manage.py migrate --noinput
       - name: Run service tests
         run: pytest dashboard/tests -q --junitxml=pytest-report.xml
-      - name: Upload pytest report
+      - name: Upload CI diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-report
-          path: pytest-report.xml
-          if-no-files-found: error
+          name: ci-diagnostics
+          path: |
+            django-checks.txt
+            pytest-report.xml
+          if-no-files-found: warn
