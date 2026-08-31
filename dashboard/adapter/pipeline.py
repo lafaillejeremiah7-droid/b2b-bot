@@ -79,17 +79,18 @@ class StubPipelineAdapter(PipelineAdapter):
         return AdapterResult("success", payload={"stub": True})
 
     def create_invoice(self, **kwargs) -> AdapterResult:
-        return AdapterResult("success", payload={"stub": True})
+        return AdapterResult("success", payload={"stub": True, "draft_only": True})
 
     def log_outbound_call(self, **kwargs) -> AdapterResult:
         return AdapterResult("success", payload={"stub": True})
 
 
 class LivePipelineAdapter(StubPipelineAdapter):
-    """Safe live-mode boundary until provider credentials/clients are configured.
+    """Safe live-mode boundary until each provider client is configured.
 
-    Returning failure rather than silently using the stub prevents a deployment
-    marked ``live`` from pretending that an external side effect occurred.
+    Invoice creation is intentionally a local-draft operation. The only live
+    Stripe side effect is behind InvoiceSendGate after a human Yes confirmation.
+    Other unconfigured live operations fail closed.
     """
 
     @staticmethod
@@ -106,7 +107,9 @@ class LivePipelineAdapter(StubPipelineAdapter):
         return self._not_configured()
 
     def create_invoice(self, **kwargs) -> AdapterResult:
-        return self._not_configured()
+        # Creating an invoice in the Deal Room must never email a customer or
+        # touch Stripe. It only permits InvoiceManager to persist the local draft.
+        return AdapterResult("success", payload={"draft_only": True})
 
     def log_outbound_call(self, **kwargs) -> AdapterResult:
         return self._not_configured()
@@ -153,10 +156,6 @@ class TimeoutEnforcingAdapter(PipelineAdapter):
                 failure_reason=f"adapter failure: {type(exc).__name__}"[:500],
             )
         finally:
-            # Do not use ThreadPoolExecutor as a context manager here: __exit__
-            # waits for a hung worker and would defeat the externally-observable
-            # timeout. A running provider call may finish later, but this facade
-            # returns failure at the configured deadline and records no domain row.
             pool.shutdown(wait=False, cancel_futures=True)
 
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
