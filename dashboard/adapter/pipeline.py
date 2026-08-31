@@ -11,6 +11,9 @@ from django.conf import settings
 
 from dashboard.models import AdapterInvocation, AdapterOperationName, AdapterResultStatus
 
+from .gmail_delivery import GmailDeliveryError
+from .gmail_oauth import GmailOAuthError, get_gmail_delivery_client, gmail_oauth_configured
+
 
 @dataclass(frozen=True)
 class AdapterResult:
@@ -86,25 +89,66 @@ class StubPipelineAdapter(PipelineAdapter):
 
 
 class LivePipelineAdapter(StubPipelineAdapter):
-    """Safe live-mode boundary until each provider client is configured.
+    """Live provider boundary.
 
-    Invoice creation is intentionally a local-draft operation. The only live
-    Stripe side effect is behind InvoiceSendGate after a human Yes confirmation.
-    Other unconfigured live operations fail closed.
+    Prospect and delivery email are submitted through Gmail using a refresh-token
+    OAuth provider. Invoice creation remains a local-draft operation; Stripe is
+    touched only by InvoiceSendGate after the operator approves the invoice link.
+    Unconfigured operations fail closed rather than pretending to run.
     """
 
     @staticmethod
-    def _not_configured() -> AdapterResult:
-        return AdapterResult("failure", failure_reason="live adapter provider is not configured")
+    def _not_configured(operation: str = "live adapter provider") -> AdapterResult:
+        return AdapterResult("failure", failure_reason=f"{operation} is not configured")
+
+    @staticmethod
+    def _gmail_ready() -> bool:
+        return bool(settings.OUTREACH_EMAIL.strip()) and gmail_oauth_configured()
+
+    @classmethod
+    def _send_gmail(cls, *, to_email: str, subject: str, body: str) -> AdapterResult:
+        if not cls._gmail_ready():
+            return cls._not_configured("Gmail OAuth/outbound sender")
+        try:
+            receipt = get_gmail_delivery_client().send(
+                to=to_email,
+                subject=subject,
+                body=body,
+            )
+        except (GmailOAuthError, GmailDeliveryError, ValueError) as exc:
+            return AdapterResult("failure", failure_reason=str(exc)[:500])
+        return AdapterResult(
+            "success",
+            payload={"message_id": receipt.message_id, "thread_id": receipt.thread_id},
+        )
 
     def generate_site_preview(self, **kwargs) -> AdapterResult:
-        return self._not_configured()
+        return self._not_configured("site-preview provider")
 
     def send_prospect_email(self, **kwargs) -> AdapterResult:
-        return self._not_configured()
+        return self._send_gmail(
+            to_email=str(kwargs.get("to_email") or ""),
+            subject=str(kwargs.get("subject") or ""),
+            body=str(kwargs.get("body") or ""),
+        )
 
     def send_delivery_email(self, **kwargs) -> AdapterResult:
-        return self._not_configured()
+        archive_link = str(kwargs.get("archive_link") or "").strip()
+        if not archive_link:
+            return AdapterResult("failure", failure_reason="delivery archive link is missing")
+        sender_name = settings.OUTREACH_SENDER_NAME.strip() or "Website Design Team"
+        body = (
+            "Hi,\n\n"
+            "Your website delivery is ready. You can access the final delivery here:\n\n"
+            f"{archive_link}\n\n"
+            "Thank you for working with us.\n\n"
+            f"Best,\n{sender_name}\nWebsite Design & Digital Presence"
+        )
+        return self._send_gmail(
+            to_email=str(kwargs.get("to_email") or ""),
+            subject="Your website delivery is ready",
+            body=body,
+        )
 
     def create_invoice(self, **kwargs) -> AdapterResult:
         # Creating an invoice in the Deal Room must never email a customer or
@@ -112,7 +156,7 @@ class LivePipelineAdapter(StubPipelineAdapter):
         return AdapterResult("success", payload={"draft_only": True})
 
     def log_outbound_call(self, **kwargs) -> AdapterResult:
-        return self._not_configured()
+        return self._not_configured("outbound-call provider")
 
 
 def _jsonable(value: Any) -> Any:
