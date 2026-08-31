@@ -21,6 +21,7 @@ from dashboard.formal_views import (
     sign_out,
     site_approve_action,
     site_reject_action,
+    stripe_webhook,
     transition_action,
 )
 from dashboard.views import company_dashboard
@@ -56,5 +57,6 @@ urlpatterns = [
     path("audit/", audit_view, name="audit_search"),
     path("notifications/", notifications_view, name="notifications"),
     path("events/", inbound_event, name="inbound_event"),
+    path("webhooks/stripe/", stripe_webhook, name="stripe_webhook"),
     path("health/", health, name="health"),
 ]
