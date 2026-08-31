@@ -1,9 +1,3 @@
-from .gmail_delivery import (
-    DeliveryReceipt,
-    GmailDeliveryClient,
-    GmailDeliveryError,
-    build_raw_message,
-)
 from .google_places import GooglePlacesTextSearchClient, PlaceCandidate
 from .no_website_research import (
     NoWebsiteResearchClient,
@@ -31,10 +25,7 @@ from .yahoo_smtp import (
 
 __all__ = [
     "AdapterResult",
-    "DeliveryReceipt",
     "FetchedPage",
-    "GmailDeliveryClient",
-    "GmailDeliveryError",
     "GooglePlacesTextSearchClient",
     "LivePipelineAdapter",
     "NoWebsiteResearchClient",
@@ -51,7 +42,6 @@ __all__ = [
     "YahooSMTPDeliveryClient",
     "YahooSMTPError",
     "YahooSMTPReceipt",
-    "build_raw_message",
     "get_pipeline_adapter",
     "get_yahoo_smtp_client",
     "yahoo_smtp_configured",
