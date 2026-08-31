@@ -237,9 +237,18 @@ def invoice_send_action(request, lead_id: int, deal_id: int):
             confirmation_token=request.POST.get("confirmation_token", ""),
         )
         if outcome.already_sent:
-            messages.info(request, "This invoice was already sent; no duplicate email was submitted.")
+            messages.info(request, "This invoice link was already sent; no duplicate email was submitted.")
+        elif outcome.sales_result and outcome.sales_result.status == "failure":
+            messages.error(
+                request,
+                outcome.sales_result.failure_reason
+                or "Closer generated the Stripe invoice link, but Sales Bot email delivery failed. Approve again to retry the same link.",
+            )
         else:
-            messages.success(request, f"Invoice sent to {outcome.invoice.recipient_email} through Stripe.")
+            messages.success(
+                request,
+                f"Sales Bot sent the Stripe invoice link to {outcome.invoice.recipient_email}.",
+            )
     except Exception as exc:
         return _action_error(request, lead_id, exc)
     return _redirect_deal(lead_id)
