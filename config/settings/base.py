@@ -75,6 +75,14 @@ STRIPE_INVOICE_DAYS_UNTIL_DUE = int(os.getenv("STRIPE_INVOICE_DAYS_UNTIL_DUE", "
 STRIPE_INVOICE_DESCRIPTION = os.getenv("STRIPE_INVOICE_DESCRIPTION", "Website Design & Digital Presence")
 STRIPE_API_TIMEOUT_SECONDS = int(os.getenv("STRIPE_API_TIMEOUT_SECONDS", "20"))
 
+# Gmail uses a refresh token in deployment so Sales Bot can obtain short-lived
+# access tokens without storing any credential in the repository or database.
+GMAIL_OAUTH_CLIENT_ID = os.getenv("GMAIL_OAUTH_CLIENT_ID", "")
+GMAIL_OAUTH_CLIENT_SECRET = os.getenv("GMAIL_OAUTH_CLIENT_SECRET", "")
+GMAIL_OAUTH_REFRESH_TOKEN = os.getenv("GMAIL_OAUTH_REFRESH_TOKEN", "")
+GMAIL_OAUTH_TOKEN_TIMEOUT_SECONDS = int(os.getenv("GMAIL_OAUTH_TOKEN_TIMEOUT_SECONDS", "15"))
+GMAIL_API_TIMEOUT_SECONDS = int(os.getenv("GMAIL_API_TIMEOUT_SECONDS", "30"))
+
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
 OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah Lafaille")
