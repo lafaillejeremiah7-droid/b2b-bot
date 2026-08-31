@@ -152,6 +152,13 @@ class StripeWebhookIntake:
         invoice = _local_invoice(stripe_invoice)
         if invoice is None:
             return StripeWebhookOutcome(True, ignored=True, reason="invoice.paid is not for a B2B Bot invoice")
+
+        currency = str(stripe_invoice.get("currency") or "").strip().lower()
+        expected_currency = str(settings.STRIPE_CURRENCY or "").strip().lower()
+        if not currency or currency != expected_currency:
+            raise StripeWebhookError(
+                f"Stripe invoice currency {currency or 'missing'} does not match configured currency {expected_currency or 'missing'}."
+            )
         amount_usd = _whole_dollars(stripe_invoice.get("amount_paid"))
 
         try:
