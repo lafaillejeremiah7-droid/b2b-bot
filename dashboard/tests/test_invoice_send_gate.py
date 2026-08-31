@@ -39,15 +39,15 @@ class FakeSalesAdapter:
     def send_prospect_email(self, **kwargs):
         self.calls.append(kwargs)
         if self.failure:
-            return AdapterResult("failure", failure_reason="Gmail delivery unavailable")
-        return AdapterResult("success", payload={"message_id": "msg_123", "thread_id": "thr_123"})
+            return AdapterResult("failure", failure_reason="Yahoo delivery unavailable")
+        return AdapterResult("success", payload={"message_id": "msg_123"})
 
 
-def _records():
+def _records(*, contact_name="Buyer"):
     operator = Operator.objects.create_operator("agent@example.com", "pw", role=Operator.Role.AGENT)
     lead = Lead.objects.create(
         company_name="Buyer Co",
-        contact_name="Buyer",
+        contact_name=contact_name,
         contact_email="Buyer@Example.com",
         researched_score=4,
         status=PipelineState.INVOICED,
@@ -76,6 +76,7 @@ def test_invoice_is_not_generated_or_sent_without_yes_approval(monkeypatch):
 
     invoice.refresh_from_db()
     assert invoice.sent_at is None
+    assert invoice.sent_by_operator_id is None
     assert invoice.provider_invoice_id is None
     assert stripe.calls == 0
     assert sales.calls == []
@@ -103,7 +104,9 @@ def test_yes_approval_closer_generates_link_and_sales_bot_sends_once(monkeypatch
     invoice.refresh_from_db()
     assert invoice.recipient_email == "buyer@example.com"
     assert invoice.provider_invoice_id == "in_test_123"
-    assert invoice.invoice_number == "INV-STRIPE-123"
+    # Local identity stays local. Stripe's display number is provider metadata,
+    # not a replacement for our unique application invoice number.
+    assert invoice.invoice_number == "LOCAL-1"
     assert invoice.hosted_invoice_url == "https://invoice.stripe.test/i/123"
     assert invoice.sent_at is not None
     assert invoice.sent_by_operator_id == operator.pk
@@ -149,7 +152,10 @@ def test_sales_failure_keeps_stripe_link_and_retry_does_not_regenerate(monkeypat
     invoice.refresh_from_db()
     assert invoice.provider_invoice_id == "in_test_123"
     assert invoice.hosted_invoice_url == "https://invoice.stripe.test/i/123"
+    assert invoice.invoice_number == "LOCAL-1"
     assert invoice.sent_at is None
+    # A failed Yahoo submission must not make the operator look like the sender.
+    assert invoice.sent_by_operator_id is None
     assert stripe.calls == 1
     assert len(sales.calls) == 1
     first_key = sales.calls[0]["idempotency_key"]
@@ -166,10 +172,33 @@ def test_sales_failure_keeps_stripe_link_and_retry_does_not_regenerate(monkeypat
     assert second.sales_result.status == "success"
     invoice.refresh_from_db()
     assert invoice.sent_at is not None
+    assert invoice.sent_by_operator_id == operator.pk
     assert stripe.calls == 1
     assert len(sales.calls) == 2
     assert sales.calls[1]["idempotency_key"] == first_key
     assert "https://invoice.stripe.test/i/123" in sales.calls[1]["body"]
+
+
+@pytest.mark.django_db
+def test_whitespace_contact_name_falls_back_safely_in_invoice_email(monkeypatch):
+    operator, _lead, deal, invoice = _records(contact_name="   ")
+    stripe = FakeStripeClient()
+    sales = FakeSalesAdapter()
+    monkeypatch.setattr("dashboard.services.invoice_send.get_stripe_invoice_client", lambda: stripe)
+    monkeypatch.setattr("dashboard.services.invoice_send.get_pipeline_adapter", lambda: sales)
+
+    session = Session()
+    token = mint_confirmation(session, action="invoice.send", target_id=invoice.pk)
+    outcome = InvoiceSendGate.send(
+        deal_id=deal.pk,
+        operator=operator,
+        session=session,
+        confirmation_token=token,
+    )
+
+    assert outcome.sales_result.status == "success"
+    assert sales.calls
+    assert sales.calls[0]["body"].startswith("Hi there,")
 
 
 @pytest.mark.django_db
@@ -194,6 +223,7 @@ def test_stub_mode_never_marks_invoice_email_as_sent(monkeypatch, settings):
     assert invoice.provider_invoice_id == "in_test_123"
     assert invoice.hosted_invoice_url == "https://invoice.stripe.test/i/123"
     assert invoice.sent_at is None
+    assert invoice.sent_by_operator_id is None
     assert stripe.calls == 1
 
 
