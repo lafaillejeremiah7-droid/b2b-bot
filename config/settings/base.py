@@ -123,4 +123,8 @@ CELERY_BEAT_SCHEDULE = {
         "task": "dashboard.tasks.verify_last_activity_consistency",
         "schedule": 86400.0,
     },
+    "purge-processed-events": {
+        "task": "dashboard.tasks.purge_processed_events",
+        "schedule": 86400.0,
+    },
 }
