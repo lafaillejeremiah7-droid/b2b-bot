@@ -128,6 +128,10 @@ class Invoice(models.Model):
     invoice_number = models.TextField(unique=True)
     amount = models.IntegerField()
     issued_at = models.DateTimeField(default=utc_now, db_default=Now(), editable=False)
+    recipient_email = models.TextField(null=True, blank=True)
+    provider_invoice_id = models.TextField(null=True, blank=True, unique=True)
+    hosted_invoice_url = models.TextField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "invoices"
