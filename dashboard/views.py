@@ -6,7 +6,8 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render
 
-from dashboard.services.dashboard_state import integration_readiness, suppression_count
+from dashboard.services.confirmation import mint_confirmation
+from dashboard.services.dashboard_state import first_pending_invoice, integration_readiness, suppression_count
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,16 @@ def _employee_cards() -> tuple[EmployeeCard, ...]:
 def company_dashboard(request):
     cards = _employee_cards()
     integrations = integration_readiness()
+    pending_invoice = first_pending_invoice()
+    invoice_send_token = (
+        mint_confirmation(
+            request.session,
+            action="invoice.send",
+            target_id=pending_invoice.invoice_id,
+        )
+        if pending_invoice
+        else ""
+    )
     return render(
         request,
         "dashboard/company.html",
@@ -52,5 +63,7 @@ def company_dashboard(request):
             "integration_count": len(integrations),
             "integrations": integrations,
             "telemetry_persisted": False,
+            "pending_invoice": pending_invoice,
+            "invoice_send_token": invoice_send_token,
         },
     )
