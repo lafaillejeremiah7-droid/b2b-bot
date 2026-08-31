@@ -14,6 +14,7 @@ from dashboard.services.authz import Action, Authz
 from dashboard.services.closer import Closer
 from dashboard.services.confirmation import consume_confirmation
 from dashboard.services.errors import ValidationRejected
+from dashboard.services.outreach_templates import first_name_token
 from dashboard.services.six_employee_pipeline import SalesBot
 
 
@@ -72,24 +73,24 @@ class InvoiceSendGate:
             if "@" not in destination or len(destination) > 320:
                 raise ValidationRejected("The customer invoice email is invalid.")
 
-            # Snapshot the exact destination approved on-screen. A later Lead edit
-            # cannot silently redirect a retry to a different email address.
-            if invoice.recipient_email != destination or invoice.sent_by_operator_id != operator.pk:
+            # Snapshot only the exact destination approved on-screen. The
+            # operator is not recorded as the sender until Yahoo actually
+            # accepts the message; a failed attempt must not look sent.
+            if invoice.recipient_email != destination:
                 invoice.recipient_email = destination
-                invoice.sent_by_operator = operator
-                invoice.save(update_fields=["recipient_email", "sent_by_operator"])
+                invoice.save(update_fields=["recipient_email"])
 
             invoice_id = invoice.pk
             lead_id = deal.lead_id
-            first_name = (deal.lead.contact_name or "there").strip().split()[0]
+            first_name = first_name_token(deal.lead.contact_name)
             company_name = (deal.lead.company_name or "").strip()
-            customer_name = (deal.lead.contact_name or deal.lead.company_name or destination).strip()
+            customer_name = (deal.lead.contact_name or deal.lead.company_name or destination).strip() or destination
             amount = invoice.amount
             existing_receipt = None
             if invoice.provider_invoice_id and invoice.hosted_invoice_url:
                 existing_receipt = StripeInvoiceReceipt(
                     provider_invoice_id=invoice.provider_invoice_id,
-                    invoice_number=invoice.invoice_number,
+                    invoice_number=None,
                     hosted_invoice_url=invoice.hosted_invoice_url,
                 )
 
@@ -113,17 +114,18 @@ class InvoiceSendGate:
                 if invoice.provider_invoice_id and invoice.provider_invoice_id != receipt.provider_invoice_id:
                     raise ValidationRejected("Invoice provider identity changed during generation; refusing to continue.")
                 invoice.provider_invoice_id = receipt.provider_invoice_id
-                if receipt.invoice_number:
-                    invoice.invoice_number = receipt.invoice_number[:200]
                 invoice.hosted_invoice_url = receipt.hosted_invoice_url
-                invoice.save(update_fields=["provider_invoice_id", "invoice_number", "hosted_invoice_url"])
+                # Keep the application's unique local invoice_number stable.
+                # Stripe's invoice number is provider metadata and must not
+                # overwrite the local unique key or collide with another row.
+                invoice.save(update_fields=["provider_invoice_id", "hosted_invoice_url"])
 
         hosted_url = (receipt.hosted_invoice_url or "").strip()
         if not hosted_url:
             raise ValidationRejected("Stripe invoice link is unavailable; Sales Bot cannot send the invoice.")
 
         # Sales Bot owns customer delivery. The stable UUID is reused across
-        # retries so the provider boundary can deduplicate ambiguous submissions.
+        # retries so the provider boundary can keep a stable Message-ID.
         email_key = uuid5(NAMESPACE_URL, f"b2b-invoice-email:{invoice_id}")
         sales_result = SalesBot().send_invoice_link(
             adapter=get_pipeline_adapter(),
