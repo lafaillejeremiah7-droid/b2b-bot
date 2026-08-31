@@ -135,6 +135,17 @@ class InvoiceSendGate:
             hosted_invoice_url=hosted_url,
             idempotency_key=email_key,
         )
+
+        # Stub mode intentionally performs no network I/O. Treat it as a failed
+        # delivery for domain-state purposes so the dashboard never claims an
+        # invoice was emailed when only a dry-run adapter executed.
+        if sales_result.status == "success" and bool(sales_result.payload.get("stub")):
+            sales_result = AdapterResult(
+                "failure",
+                failure_reason="Sales Bot delivery adapter is in stub mode; no customer email was sent.",
+                payload=sales_result.payload,
+            )
+
         if sales_result.status != "success":
             invoice = Invoice.objects.get(pk=invoice_id)
             return InvoiceSendOutcome(
