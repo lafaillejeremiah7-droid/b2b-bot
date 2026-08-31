@@ -16,6 +16,7 @@ from dashboard.services.auth_service import AuthService
 from dashboard.services.confirmation import mint_confirmation
 from dashboard.services.errors import DashboardError
 from dashboard.services.events import EventIntake
+from dashboard.services.invoice_send import InvoiceSendGate
 from dashboard.services.money import InvoiceManager, PaymentVerifier, ReleaseGate
 from dashboard.services.outreach_controller import OutreachController
 from dashboard.services.pipeline_state import PipelineStateMachine
@@ -78,12 +79,14 @@ def deal_room(request, lead_id: int):
     context["suggested_price"] = recommendation_for(context["lead"])
     site = context["latest_site"]
     deal = context["deal"]
+    invoice = context["invoice"]
     context["tokens"] = {
         "email": mint_confirmation(request.session, action="outreach.send", target_id=lead_id),
         "call": mint_confirmation(request.session, action="outreach.call", target_id=lead_id),
         "duplicate": mint_confirmation(request.session, action="outreach.duplicate", target_id=lead_id),
         "site_approve": mint_confirmation(request.session, action="site.approve", target_id=site.id) if site else "",
         "site_reject": mint_confirmation(request.session, action="site.reject", target_id=site.id) if site else "",
+        "invoice_send": mint_confirmation(request.session, action="invoice.send", target_id=invoice.pk) if invoice and invoice.sent_at is None else "",
         "payment_mismatch": mint_confirmation(request.session, action="payment.verify.amount_mismatch", target_id=deal.pk) if deal else "",
         "release": mint_confirmation(request.session, action="release.authorize", target_id=deal.pk) if deal else "",
     }
@@ -217,7 +220,26 @@ def invoice_action(request, lead_id: int, deal_id: int):
         if outcome.adapter_result.status == "failure":
             messages.error(request, outcome.adapter_result.failure_reason or "Invoice creation failed.")
         else:
-            messages.success(request, "Invoice created.")
+            messages.success(request, "Invoice created. Nothing has been emailed; approve the send prompt when ready.")
+    except Exception as exc:
+        return _action_error(request, lead_id, exc)
+    return _redirect_deal(lead_id)
+
+
+@login_required
+@require_POST
+def invoice_send_action(request, lead_id: int, deal_id: int):
+    try:
+        outcome = InvoiceSendGate.send(
+            deal_id=deal_id,
+            operator=request.user,
+            session=request.session,
+            confirmation_token=request.POST.get("confirmation_token", ""),
+        )
+        if outcome.already_sent:
+            messages.info(request, "This invoice was already sent; no duplicate email was submitted.")
+        else:
+            messages.success(request, f"Invoice sent to {outcome.invoice.recipient_email} through Stripe.")
     except Exception as exc:
         return _action_error(request, lead_id, exc)
     return _redirect_deal(lead_id)
