@@ -63,4 +63,11 @@ jobs:
       - name: Migrate PostgreSQL
         run: python manage.py migrate --noinput
       - name: Run service tests
-        run: pytest dashboard/tests -q
+        run: pytest dashboard/tests -q --junitxml=pytest-report.xml
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: pytest-report.xml
+          if-no-files-found: error
