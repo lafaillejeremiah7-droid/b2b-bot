@@ -22,6 +22,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "dashboard.middleware.SessionExpiryMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django_htmx.middleware.HtmxMiddleware",
 ]
@@ -49,8 +50,8 @@ DATABASES = {"default": {
 }}
 
 AUTH_USER_MODEL = "dashboard.Operator"
-LOGIN_URL = "/admin/login/"
-LOGIN_REDIRECT_URL = "/dashboard/"
+LOGIN_URL = "/sign-in/"
+LOGIN_REDIRECT_URL = "/leads/"
 USE_TZ = True
 TIME_ZONE = "UTC"
 REPORTING_TIMEZONE = os.getenv("REPORTING_TIMEZONE", "America/New_York")
@@ -66,12 +67,14 @@ GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 GOOGLE_MAPS_SEARCH_PAGE_SIZE = int(os.getenv("GOOGLE_MAPS_SEARCH_PAGE_SIZE", "10"))
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY", "")
 SERPAPI_SEARCH_MAX_RESULTS = int(os.getenv("SERPAPI_SEARCH_MAX_RESULTS", "10"))
+PREVIEW_HOST_PATTERN = os.getenv("PREVIEW_HOST_PATTERN", "preview.")
 
 # Outbound identity is injected at deploy/runtime so personal contact details are
 # never committed to this public repository.
 OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah Lafaille")
 OUTREACH_PHONE = os.getenv("OUTREACH_PHONE", "")
 OUTREACH_EMAIL = os.getenv("OUTREACH_EMAIL", "")
+NOTIFICATION_EMAIL_FROM = os.getenv("NOTIFICATION_EMAIL_FROM", OUTREACH_EMAIL)
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -79,4 +82,13 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", CELERY_BROKER_URL)
 CELERY_TASK_DEFAULT_QUEUE = "notifications"
-CELERY_BEAT_SCHEDULE = {}
+CELERY_BEAT_SCHEDULE = {
+    "reconcile-outreach-reservations": {
+        "task": "dashboard.tasks.reconcile_outreach_reservations",
+        "schedule": 300.0,
+    },
+    "verify-last-activity-consistency": {
+        "task": "dashboard.tasks.verify_last_activity_consistency",
+        "schedule": 86400.0,
+    },
+}
