@@ -7,6 +7,7 @@ from datetime import timedelta
 from django.contrib.auth import login, logout
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.http import url_has_allowed_host_and_scheme
 
 from dashboard.models import LoginAttempt, LoginAttemptOutcome, Operator
 
@@ -49,6 +50,16 @@ def _recent_failures(identifier: str, *, now=None) -> list[LoginAttempt]:
     return list(query.order_by("occurred_at", "id"))
 
 
+def _safe_local_redirect(retained_screen: str | None) -> str:
+    candidate = (retained_screen or "").strip()
+    if (
+        candidate.startswith("/")
+        and url_has_allowed_host_and_scheme(candidate, allowed_hosts=set())
+    ):
+        return candidate
+    return "/leads/"
+
+
 class AuthService:
     @staticmethod
     def sign_in(identifier: str, password: str, retained_screen: str | None = None) -> SignInOutcome:
@@ -81,11 +92,10 @@ class AuthService:
         if not accepted:
             return SignInOutcome(established=False, message=AUTH_FAILURE_MESSAGE)
 
-        redirect_to = retained_screen if retained_screen and retained_screen.startswith("/") else "/leads/"
         return SignInOutcome(
             established=True,
             operator=operator,
-            redirect_to=redirect_to,
+            redirect_to=_safe_local_redirect(retained_screen),
         )
 
     @classmethod
