@@ -134,12 +134,12 @@ class TimeoutEnforcingAdapter(PipelineAdapter):
             raise TypeError("every adapter invocation requires a UUID idempotency_key")
 
         started = time.monotonic()
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(fn, **kwargs)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(fn, **kwargs).result(
-                    timeout=settings.ADAPTER_OPERATION_TIMEOUT_SECONDS
-                )
+            result = future.result(timeout=settings.ADAPTER_OPERATION_TIMEOUT_SECONDS)
         except concurrent.futures.TimeoutError:
+            future.cancel()
             result = AdapterResult(
                 "failure",
                 failure_reason=(
@@ -148,7 +148,16 @@ class TimeoutEnforcingAdapter(PipelineAdapter):
                 )[:500],
             )
         except Exception as exc:
-            result = AdapterResult("failure", failure_reason=f"adapter failure: {type(exc).__name__}"[:500])
+            result = AdapterResult(
+                "failure",
+                failure_reason=f"adapter failure: {type(exc).__name__}"[:500],
+            )
+        finally:
+            # Do not use ThreadPoolExecutor as a context manager here: __exit__
+            # waits for a hung worker and would defeat the externally-observable
+            # timeout. A running provider call may finish later, but this facade
+            # returns failure at the configured deadline and records no domain row.
+            pool.shutdown(wait=False, cancel_futures=True)
 
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
         AdapterInvocation.objects.create(
