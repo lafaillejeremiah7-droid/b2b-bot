@@ -153,6 +153,7 @@ class InvoiceManager:
 
 class PaymentService:
     @staticmethod
+    @transaction.atomic
     def record_received(
         *,
         deal: Deal,
@@ -160,9 +161,14 @@ class PaymentService:
         amount_usd: int,
         paid_date,
     ) -> tuple[Payment, str | None]:
-        """Record money first; a state anomaly never erases a real payment."""
+        """Record money atomically; a state anomaly never erases a real payment."""
         if isinstance(amount_usd, bool) or not isinstance(amount_usd, int) or not 1 <= amount_usd <= 1000:
             raise ValidationRejected("Payment amount must be a whole dollar value from 1 to 1000.")
+
+        # Lock the Deal even when this service is invoked outside EventIntake.
+        # EventIntake already holds the same row lock, so this is a safe nested
+        # acquisition there and prevents partially-updated standalone calls.
+        deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal.pk)
         payment, created = Payment.objects.get_or_create(
             event_id=event_id,
             defaults={"deal": deal, "amount_usd": amount_usd, "paid_date": paid_date},
@@ -189,6 +195,9 @@ class PaymentService:
                     event_id=event_id,
                 )
         except TransitionRejected:
+            # Refresh because request_from_event may have observed a newer state
+            # than the object supplied by the caller.
+            deal.lead.refresh_from_db(fields=["status"])
             reason = f"Pipeline_State {deal.lead.status} cannot transition to Paid_Pending_Verification"
             deal.payment_anomaly_flag = True
             deal.payment_anomaly_reason = reason[:500]
@@ -260,8 +269,12 @@ class PaymentVerifier:
             operator,
             AuditActionType.PAYMENT_VERIFICATION,
             deal,
-            {"payment_verified_at": None, "payment_amount": payment.amount_usd, "invoice_amount": invoice.amount},
-            {"payment_verified_at": verified_at.isoformat(), "difference": difference},
+            {"payment_verified_at": None},
+            {
+                "payment_verified_at": verified_at.isoformat(),
+                "verified_by_operator_id": operator.pk,
+                "difference": difference,
+            },
             occurred_at=verified_at,
         )
         _transition_with_existing_audit(
@@ -271,7 +284,7 @@ class PaymentVerifier:
             audit_entry=audit,
             occurred_at=verified_at,
         )
-        return PaymentVerificationOutcome(deal, difference)
+        return PaymentVerificationOutcome(deal=deal, difference=difference)
 
 
 class ReleaseGate:
@@ -283,19 +296,24 @@ class ReleaseGate:
         session,
         confirmation_token: str,
         archive_link: str,
-        idempotency_key: UUID | None = None,
     ) -> ReleaseOutcome:
         Authz.check(operator, Action.RELEASE_AUTHORIZE)
-        consume_confirmation(session, token=confirmation_token, action="release.authorize", target_id=deal_id)
-        key = idempotency_key or uuid4()
+        archive_link = (archive_link or "").strip()
+        if not archive_link:
+            raise ValidationRejected("A delivery archive link is required.")
 
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-            # Requirement 8.9: verification is checked before state.
             if deal.payment_verified_at is None:
-                raise ValidationRejected("Payment verification outstanding.")
+                raise ValidationRejected("Payment verification outstanding; release is blocked.")
             if deal.lead.status != PipelineState.PAYMENT_VERIFIED:
                 raise ValidationRejected("Release requires Pipeline_State Payment_Verified.")
+            consume_confirmation(
+                session,
+                token=confirmation_token,
+                action="release.authorize",
+                target_id=deal.pk,
+            )
             existing = ReleaseAuthorization.objects.filter(deal_id=deal.pk).first()
             if existing is not None:
                 return ReleaseOutcome(existing, None, already_authorized=True)
@@ -309,7 +327,7 @@ class ReleaseGate:
             except IntegrityError:
                 authorization = ReleaseAuthorization.objects.get(deal_id=deal.pk)
                 return ReleaseOutcome(authorization, None, already_authorized=True)
-            audit = AuditLogger.record(
+            AuditLogger.record(
                 operator,
                 AuditActionType.RELEASE_AUTHORIZATION,
                 authorization,
@@ -317,13 +335,11 @@ class ReleaseGate:
                 {"deal_id": deal.pk, "authorized_at": authorized_at.isoformat()},
                 occurred_at=authorized_at,
             )
-            to_email = deal.lead.contact_email
-            if not to_email:
-                raise ValidationRejected("The Lead has no contact email for delivery.")
+            key = uuid4()
 
         result = get_pipeline_adapter().send_delivery_email(
             deal_id=deal_id,
-            to_email=to_email,
+            to_email=deal.lead.contact_email,
             archive_link=archive_link,
             idempotency_key=key,
         )
@@ -332,11 +348,21 @@ class ReleaseGate:
 
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
+            authorization = ReleaseAuthorization.objects.get(deal_id=deal.pk)
+            if deal.delivery_sent:
+                return ReleaseOutcome(authorization, result, already_authorized=True)
             delivered_at = timezone.now()
             deal.delivery_sent = True
             deal.delivered_date = delivered_at
             deal.save(update_fields=["delivery_sent", "delivered_date"])
-            # Reuse the release-authorization audit row: one human action, one audit.
+            audit = AuditLogger.record(
+                operator,
+                AuditActionType.RELEASE_AUTHORIZATION,
+                deal,
+                {"delivery_sent": False},
+                {"delivery_sent": True, "delivered_date": delivered_at.isoformat()},
+                occurred_at=delivered_at,
+            )
             _transition_with_existing_audit(
                 lead=deal.lead,
                 target=PipelineState.RELEASED,
@@ -344,49 +370,4 @@ class ReleaseGate:
                 audit_entry=audit,
                 occurred_at=delivered_at,
             )
-        return ReleaseOutcome(authorization, result)
-
-    @staticmethod
-    def retry_delivery(
-        *,
-        deal_id: int,
-        operator: Operator,
-        archive_link: str,
-        idempotency_key: UUID,
-    ) -> ReleaseOutcome:
-        Authz.check(operator, Action.RELEASE_AUTHORIZE)
-        with transaction.atomic():
-            deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-            authorization = ReleaseAuthorization.objects.get(deal_id=deal.pk)
-            if deal.delivery_sent is True:
-                return ReleaseOutcome(authorization, None, already_authorized=True)
-            if not deal.lead.contact_email:
-                raise ValidationRejected("The Lead has no contact email for delivery.")
-            audit = authorization.operator.audit_entries.filter(
-                action_type=AuditActionType.RELEASE_AUTHORIZATION,
-                target_type="releaseauthorization",
-                target_id=authorization.id,
-            ).order_by("-occurred_at", "-id").first()
-
-        result = get_pipeline_adapter().send_delivery_email(
-            deal_id=deal.pk,
-            to_email=deal.lead.contact_email,
-            archive_link=archive_link,
-            idempotency_key=idempotency_key,
-        )
-        if result.status == "success":
-            with transaction.atomic():
-                deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
-                delivered_at = timezone.now()
-                deal.delivery_sent = True
-                deal.delivered_date = delivered_at
-                deal.save(update_fields=["delivery_sent", "delivered_date"])
-                if deal.lead.status == PipelineState.PAYMENT_VERIFIED and audit is not None:
-                    _transition_with_existing_audit(
-                        lead=deal.lead,
-                        target=PipelineState.RELEASED,
-                        actor=operator,
-                        audit_entry=audit,
-                        occurred_at=delivered_at,
-                    )
-        return ReleaseOutcome(authorization, result)
+            return ReleaseOutcome(authorization, result)
