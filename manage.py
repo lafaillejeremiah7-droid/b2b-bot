@@ -1,16 +1,8 @@
 #!/usr/bin/env python
-"""Django management entry point for the Deal Room Dashboard."""
-
 import os
 import sys
 
-
-def main() -> None:
+if __name__ == "__main__":
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.base")
     from django.core.management import execute_from_command_line
-
     execute_from_command_line(sys.argv)
-
-
-if __name__ == "__main__":
-    main()

@@ -1,6 +1,48 @@
-"""Pipeline_Adapter boundary (design §3.14, Requirement 12).
+from .google_places import GooglePlacesTextSearchClient, PlaceCandidate
+from .no_website_research import (
+    NoWebsiteResearchClient,
+    NoWebsiteResearchError,
+    SearchResult,
+    SerpApiGoogleSearchClient,
+)
+from .pipeline import (
+    AdapterResult,
+    LivePipelineAdapter,
+    PipelineAdapter,
+    StubPipelineAdapter,
+    TimeoutEnforcingAdapter,
+    get_pipeline_adapter,
+)
+from .website_research import FetchedPage, WebsiteResearchClient, WebsiteResearchError
+from .yahoo_smtp import (
+    YahooSMTPConfig,
+    YahooSMTPDeliveryClient,
+    YahooSMTPError,
+    YahooSMTPReceipt,
+    get_yahoo_smtp_client,
+    yahoo_smtp_configured,
+)
 
-Empty by design at task 1.1. The stub implementation lands in task 7; the live
-implementation follows. Nothing outside ``dashboard.services`` may import from
-this package (design §3.0.1 rule 3).
-"""
+__all__ = [
+    "AdapterResult",
+    "FetchedPage",
+    "GooglePlacesTextSearchClient",
+    "LivePipelineAdapter",
+    "NoWebsiteResearchClient",
+    "NoWebsiteResearchError",
+    "PipelineAdapter",
+    "PlaceCandidate",
+    "SearchResult",
+    "SerpApiGoogleSearchClient",
+    "StubPipelineAdapter",
+    "TimeoutEnforcingAdapter",
+    "WebsiteResearchClient",
+    "WebsiteResearchError",
+    "YahooSMTPConfig",
+    "YahooSMTPDeliveryClient",
+    "YahooSMTPError",
+    "YahooSMTPReceipt",
+    "get_pipeline_adapter",
+    "get_yahoo_smtp_client",
+    "yahoo_smtp_configured",
+]

@@ -1,8 +1,52 @@
-"""Service layer (design §3.0.1 rules 2, 3 and 4).
+from .boss import Boss, BossAction, BossDecision, BossSnapshot, EmployeeKPI
+from .closer import Closer, CloserDecision, ReplyCategory
+from .company import (
+    CompanyDeliveryResult,
+    CompanyReplyResult,
+    EightEmployeeCompany,
+    SevenEmployeeCompany,
+)
+from .discovery_handoff import (
+    ResearchHandoff,
+    ScoutHandoff,
+    apply_research_handoff,
+    apply_scout_handoff,
+    verify_research_handoff,
+    verify_scout_handoff,
+)
+from .outreach_clearance import (
+    OutreachClearance,
+    apply_outreach_clearance,
+    verify_outreach_clearance,
+)
+from .six_employee_pipeline import Lead, PipelineResult, SixEmployeePipeline
+from .suppression import DjangoSuppressionStore, SuppressionStore
 
-Empty by design at task 1.1. Every service entry point added here opens its own
-``transaction.atomic()`` block, calls ``Authz.check`` as its first statement, and
-is the only kind of callable permitted to reach ``dashboard.adapter``. The
-``release_gate`` module, when it lands, is additionally the sole writer of
-``release_authorizations`` and the sole caller of ``send_delivery_email``.
-"""
+__all__ = [
+    "Boss",
+    "BossAction",
+    "BossDecision",
+    "BossSnapshot",
+    "Closer",
+    "CloserDecision",
+    "CompanyDeliveryResult",
+    "CompanyReplyResult",
+    "DjangoSuppressionStore",
+    "EightEmployeeCompany",
+    "EmployeeKPI",
+    "Lead",
+    "OutreachClearance",
+    "PipelineResult",
+    "ReplyCategory",
+    "ResearchHandoff",
+    "ScoutHandoff",
+    "SevenEmployeeCompany",
+    "SixEmployeePipeline",
+    "SuppressionStore",
+    "apply_outreach_clearance",
+    "apply_research_handoff",
+    "apply_scout_handoff",
+    "verify_outreach_clearance",
+    "verify_research_handoff",
+    "verify_scout_handoff",
+]

@@ -1,0 +1,70 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{{ lead.company_name }} · Deal Room{% endblock %}
+{% block content %}
+<a href="/leads/">← Leads</a>
+<div style="display:flex;justify-content:space-between;gap:20px;align-items:start;flex-wrap:wrap">
+  <div>
+    <h1>{{ lead.company_name }}</h1>
+    <p class="muted">{{ lead.industry|default:"Industry not set" }} · {{ lead.status }} · score {{ lead.researched_score }}/5</p>
+  </div>
+  <div class="panel"><div class="muted">Release status</div><div class="kpi">{{ release_status }}</div>{% if deal and deal.delivered_date %}<div class="muted">{{ deal.delivered_date }}</div>{% endif %}</div>
+</div>
+
+<div class="grid">
+  <section class="panel"><h2>Contact</h2><p>{{ lead.contact_name|default:"No contact" }}<br>{{ lead.contact_email|default:"No email" }}<br>{{ lead.contact_phone|default:"No phone" }}</p><p class="muted">{{ lead.website_url|default:"No website" }}</p></section>
+  <section class="panel"><h2>Pricing</h2><p class="kpi">${{ suggested_price.amount }}</p><p class="muted">{% if suggested_price.is_fallback %}Fallback anchor; missing {{ suggested_price.missing|join:", " }}{% else %}Formula recommendation{% endif %}</p><form method="post" action="/deals/{{ lead.id }}/price/" class="stack">{% csrf_token %}<input name="agreed_price" inputmode="numeric" value="{% if deal and deal.agreed_price %}{{ deal.agreed_price }}{% endif %}" placeholder="550–1000"><button>Set agreed price</button></form></section>
+  <section class="panel"><h2>Site review</h2>{% if latest_site %}<p>{{ latest_site.review_state }} · {{ latest_site.page_count|default:"?" }} pages</p>{% if latest_site.preview_url %}<p><a target="_blank" rel="noopener" href="{{ latest_site.preview_url }}">Open preview ↗</a></p>{% endif %}{% if latest_site.review_state == "Ready_For_Review" %}<form class="stack" method="post" action="/deals/{{ lead.id }}/sites/{{ latest_site.id }}/approve/">{% csrf_token %}<input type="hidden" name="confirmation_token" value="{{ tokens.site_approve }}"><button>Approve site</button></form><form class="stack" style="margin-top:10px" method="post" action="/deals/{{ lead.id }}/sites/{{ latest_site.id }}/reject/">{% csrf_token %}<input type="hidden" name="confirmation_token" value="{{ tokens.site_reject }}"><textarea name="reason" minlength="10" maxlength="1000" placeholder="Rejection reason"></textarea><button>Reject + regenerate</button></form>{% endif %}{% else %}<p class="muted">No generated site yet.</p>{% endif %}</section>
+</div>
+
+<div class="grid" style="margin-top:16px">
+  <section class="panel"><h2>Email outreach</h2><form method="post" action="/deals/{{ lead.id }}/email/" class="stack">{% csrf_token %}<input type="hidden" name="confirmation_token" value="{{ tokens.email }}"><input type="hidden" name="duplicate_confirmation_token" value="{{ tokens.duplicate }}">{% if latest_site %}<input type="hidden" name="site_project_id" value="{{ latest_site.id }}">{% endif %}<input name="subject" maxlength="200" placeholder="Subject" required><textarea name="body" maxlength="10000" placeholder="Personalized email body" required></textarea><button>Confirm + submit email</button></form></section>
+  <section class="panel"><h2>Call</h2><form method="post" action="/deals/{{ lead.id }}/call/" class="stack">{% csrf_token %}<input type="hidden" name="confirmation_token" value="{{ tokens.call }}"><input type="hidden" name="duplicate_confirmation_token" value="{{ tokens.duplicate }}"><select name="outcome"><option value="answered">Answered</option><option value="busy">Busy</option><option value="no-answer">No answer</option></select><textarea name="notes" maxlength="2000" placeholder="Call notes"></textarea><button>Confirm + log outbound call</button></form></section>
+  <section class="panel"><h2>Pipeline state</h2><form method="post" action="/deals/{{ lead.id }}/transition/" class="stack">{% csrf_token %}<input type="hidden" name="expected_from_state" value="{{ lead.status }}"><input type="hidden" name="state_version" value="{{ lead.state_version }}"><input name="to_state" placeholder="Next Pipeline_State" required><button>Request transition</button></form></section>
+</div>
+
+<div class="grid" style="margin-top:16px">
+  <section class="panel">
+    <h2>Invoice</h2>
+    {% if invoice %}
+      <p><strong>{{ invoice.invoice_number }}</strong><br>${{ invoice.amount }} · {{ invoice.issued_at }}</p>
+      {% if invoice.sent_at %}
+        <p class="ok">Sales Bot sent the invoice link {{ invoice.sent_at }} to {{ invoice.recipient_email }}</p>
+        {% if invoice.hosted_invoice_url %}<p><a href="{{ invoice.hosted_invoice_url }}" target="_blank" rel="noopener">Open Stripe invoice ↗</a></p>{% endif %}
+      {% else %}
+        <p class="muted">Ready, but not emailed. Sending requires your Yes approval.</p>
+        <button type="button" onclick="document.getElementById('invoice-send-prompt').style.display='flex'">Review send</button>
+      {% endif %}
+    {% elif deal %}
+      <form method="post" action="/deals/{{ lead.id }}/money/{{ deal.pk }}/invoice/">{% csrf_token %}<button>Create invoice</button></form>
+    {% else %}
+      <p class="muted">Set an agreed price first.</p>
+    {% endif %}
+  </section>
+  <section class="panel"><h2>Payment verification</h2>{% if payment %}<p>${{ payment.amount_usd }} paid {{ payment.paid_date }}</p>{% endif %}{% if deal %}<p>{% if deal.payment_verified_at %}<span class="ok">Verified {{ deal.payment_verified_at }}</span>{% else %}<span class="muted">Not verified</span>{% endif %}</p>{% if deal.payment_anomaly_flag %}<p class="danger">Payment anomaly: {{ deal.payment_anomaly_reason }}</p>{% endif %}<form method="post" action="/deals/{{ lead.id }}/money/{{ deal.pk }}/verify/">{% csrf_token %}<input type="hidden" name="mismatch_confirmation_token" value="{{ tokens.payment_mismatch }}"><button>Verify payment</button></form>{% endif %}</section>
+  <section class="panel"><h2>Release</h2>{% if authorization %}<p>Authorized {{ authorization.authorized_at }}</p>{% endif %}{% if deal %}<form method="post" action="/deals/{{ lead.id }}/money/{{ deal.pk }}/release/" class="stack">{% csrf_token %}<input type="hidden" name="confirmation_token" value="{{ tokens.release }}"><input name="archive_link" placeholder="Delivery archive link" required><button>Authorize + deliver</button></form>{% endif %}</section>
+</div>
+
+<section class="panel" style="margin-top:16px"><h2>Activity</h2>{% for item in activity.page.object_list %}<div style="padding:10px 0;border-bottom:1px solid #ffffff10"><span class="pill">{{ item.kind }}</span> <strong>{{ item.summary }}</strong><span class="muted"> · {{ item.occurred_at }}</span></div>{% empty %}<p class="muted">No activity recorded.</p>{% endfor %}</section>
+
+{% if invoice and not invoice.sent_at and deal %}
+<div id="invoice-send-prompt" style="position:fixed;inset:0;z-index:9999;background:rgba(2,6,23,.78);backdrop-filter:blur(12px);display:flex;align-items:center;justify-content:center;padding:24px">
+  <div class="panel" style="width:min(560px,100%);box-shadow:0 30px 90px rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.14)">
+    <div class="pill">Invoice ready</div>
+    <h2 style="font-size:28px;margin-bottom:8px">Send invoice to customer?</h2>
+    <p class="muted">If you choose Yes, Closer #7 generates/finalizes the secure Stripe invoice link and Sales Bot #5 emails that link to the customer. Stripe itself does not send the email.</p>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;margin:22px 0">
+      <strong>Customer</strong><span>{{ lead.contact_name|default:lead.company_name }}</span>
+      <strong>Amount</strong><span>${{ invoice.amount }}</span>
+      <strong>Email</strong><span>{{ invoice.recipient_email|default:lead.contact_email|default:"No email" }}</span>
+    </div>
+    <form method="post" action="/deals/{{ lead.id }}/money/{{ deal.pk }}/invoice/send/" style="display:flex;gap:10px;flex-wrap:wrap">
+      {% csrf_token %}
+      <input type="hidden" name="confirmation_token" value="{{ tokens.invoice_send }}">
+      <button type="submit">Yes — Send Invoice</button>
+      <button type="button" onclick="document.getElementById('invoice-send-prompt').style.display='none'">Not Now</button>
+    </form>
+    <p class="muted" style="margin-top:16px;font-size:13px">Retries reuse the same Stripe invoice identity and the same Sales Bot email idempotency key.</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

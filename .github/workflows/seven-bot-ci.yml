@@ -1,0 +1,76 @@
+name: Eight Employee CI
+
+on:
+  push:
+    branches:
+      - feat/b2b-runtime-foundation
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: b2b_bot
+          POSTGRES_USER: b2b_bot
+          POSTGRES_PASSWORD: b2b_bot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U b2b_bot -d b2b_bot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      DJANGO_SECRET_KEY: ci-only-secret
+      POSTGRES_DB: b2b_bot
+      POSTGRES_USER: b2b_bot
+      POSTGRES_PASSWORD: b2b_bot
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Compile
+        run: python -m compileall -q config dashboard
+      - name: Import architecture
+        run: lint-imports
+      - name: Import-time company assertions
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.base
+        run: |
+          python - <<'PY'
+          import django
+          django.setup()
+          from dashboard.services.company import EightEmployeeCompany
+          expected = ("Scout", "Researcher", "Qualifier", "Personalizer", "Sales Bot", "Manager", "Closer", "Boss")
+          assert EightEmployeeCompany.employee_names == expected
+          assert len(set(expected)) == 8
+          PY
+      - name: Django checks
+        run: |
+          set -o pipefail
+          python manage.py check
+          python manage.py makemigrations --check --dry-run --verbosity 3 2>&1 | tee django-checks.txt
+      - name: Migrate PostgreSQL
+        run: python manage.py migrate --noinput
+      - name: Run service tests
+        run: pytest dashboard/tests -q --junitxml=pytest-report.xml
+      - name: Upload CI diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-diagnostics
+          path: |
+            django-checks.txt
+            pytest-report.xml
+          if-no-files-found: warn
