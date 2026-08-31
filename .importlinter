@@ -1,0 +1,149 @@
+# import-linter contracts for the layering rules of design §3.0.1 and the
+# release-safety structural layer of §3.7.2 (task 1.4).
+#
+# Design §7.6: "a structural guarantee that is only documented is a convention."
+# These three contracts are the machine-checked form of the three structural
+# claims the design rests on. `lint-imports` is a CI step of its own, so a
+# violating change fails the build rather than relying on a reviewer noticing.
+#
+# ==========================================================================
+# READ THIS BEFORE EDITING: all three contracts are DECLARED BUT EMPTY-SOURCED.
+# ==========================================================================
+# Every `source_modules` list below is empty, because none of the modules that
+# would populate it exists yet — `dashboard/views/`, `dashboard/services/` and
+# `dashboard/adapter/` are the empty packages task 1.1 created so these contracts
+# would have stable import targets to name later.
+#
+# An empty-sourced `forbidden` contract is vacuously true: import-linter reports
+# it KEPT, and `lint-imports` exits 0. That is the intended state today. It is
+# also, on its own, a contract that would pass forever — including on the day a
+# view starts importing a model — which is worthless.
+#
+# So the activation is not left to memory. `scripts/check_deferred_activations.py`
+# runs as its own CI step, holds one entry per contract below, and FAILS THE
+# BUILD as soon as the modules a contract is meant to constrain appear while its
+# `source_modules` is still empty. Each entry names the owning task. If you are
+# reading this because that check just failed, the fix is to fill in the
+# `source_modules` list of the named contract — not to silence the check.
+#
+# Activation ownership, contract by contract:
+#
+#   views-never-import-models   -> task 8.1  (first module under dashboard/views/)
+#   adapter-send-chokepoint     -> task 11.1 (ClearedOutreach chokepoint)
+#   release-gate-isolation      -> task 14.3 (release safety layer 1)
+
+[importlinter]
+root_packages =
+    dashboard
+    config
+
+# Fail rather than warn if an `ignore_imports` entry stops matching anything:
+# a stale exemption is how a contract quietly stops constraining what it names.
+unmatched_ignore_imports_alerting = error
+
+
+# --------------------------------------------------------------------------
+# Contract 1 — §3.0.1 rule 1: views never write, and never import models.
+# --------------------------------------------------------------------------
+# "View functions parse the request, call exactly one service-layer function,
+# and render the result. They contain no gate evaluation, no state transitions,
+# and no direct ORM writes." (§3.0.1) — restated as an import rule in §7.6:
+# "views may not import models directly."
+#
+# The import rule is the enforceable form of the behavioural one. A view that
+# cannot name `Lead` cannot call `Lead.objects.update()`, so rule 1 becomes a
+# property of the module graph instead of a thing reviewers check.
+#
+# ACTIVATED BY TASK 8.1, which adds the first real module under
+# `dashboard/views/` (the Lead_List_View slice). Fill in:
+#
+#     source_modules =
+#         dashboard.views
+#     forbidden_modules =
+#         dashboard.models
+#
+# Both endpoints already exist as packages, so activation is a two-line edit
+# with no other prerequisite. Expect one design question at that point: views
+# need model *types* for annotations. Resolve it with `if TYPE_CHECKING:`
+# imports plus an `ignore_imports` entry naming each one, so the exemption is
+# enumerated and reviewable — never by widening the contract to the whole
+# package.
+[importlinter:contract:views-never-import-models]
+name = Views may not import models directly (§3.0.1 rule 1, §7.6)
+type = forbidden
+source_modules =
+forbidden_modules =
+
+
+# --------------------------------------------------------------------------
+# Contract 2 — §3.6.1 layer 2: the adapter send operations have one caller.
+# --------------------------------------------------------------------------
+# §3.6.1: "Import-linter contract: only `outreach_controller` may import the
+# adapter's `send_prospect_email` and `log_outbound_call` symbols. A new module
+# attempting a direct send fails CI."
+#
+# This is the second of the three reinforcing layers behind Requirement 5's
+# negative claim that no code path may contact an opted-out Lead. Layer 1 is the
+# `ClearedOutreach` token that `submit()` will not run without; layer 3 is the
+# BEFORE INSERT triggers of §4.6. This contract is what stops a *new* module
+# from bypassing layer 1 by calling the adapter directly — the failure mode
+# §3.6.1 opens by naming: "a boolean check inside send_email() satisfies today's
+# code and fails the first time someone adds a second send path."
+#
+# ACTIVATED BY TASK 11.1, which implements `outreach_controller` and the
+# `ClearedOutreach` chokepoint. Fill in the sources with every layer that must
+# not reach the send operations, e.g.:
+#
+#     source_modules =
+#         dashboard.views
+#         dashboard.adapter.events
+#         dashboard.services.notification_service
+#         dashboard.services.release_gate
+#         dashboard.services.site_review_gate
+#     forbidden_modules =
+#         dashboard.adapter.send
+#
+# Note the shape: `outreach_controller` is *absent from the source list* rather
+# than present-and-exempted. An `ignore_imports` exemption for the one permitted
+# caller would read as "everyone is forbidden, and here is a hole", and holes
+# get copied. Omission states the rule directly.
+[importlinter:contract:adapter-send-chokepoint]
+name = Only outreach_controller may reach the adapter send operations (§3.6.1, §7.6)
+type = forbidden
+source_modules =
+forbidden_modules =
+
+
+# --------------------------------------------------------------------------
+# Contract 3 — §3.7.2 layer 1: release_authorizations has exactly one writer.
+# --------------------------------------------------------------------------
+# §3.7.2 fact 3: "`release_authorizations` has exactly one writer.
+# `ReleaseGate.authorize_release()` is the sole insert site, and
+# `adapter.send_delivery_email` is called from nowhere else."
+#
+# This is the safety-critical one. Requirement 8.10 enumerates what must not
+# create an authorization — a Pipeline_Adapter event, a payment event, a
+# Pipeline_State change, or a bulk action — and §3.7.2 observes that each of
+# those lives in a module named as a source below, so "the requirement is
+# checked by a build step rather than by reading code."
+#
+# ACTIVATED BY TASK 14.3. §3.7.2 already writes the contract out in full; copy
+# it verbatim:
+#
+#     source_modules =
+#         dashboard.views
+#         dashboard.adapter.events
+#         dashboard.services.payment_verifier
+#         dashboard.services.outreach_controller
+#         dashboard.services.notification_service
+#     forbidden_modules =
+#         dashboard.models.release_authorization
+#
+# Task 14.3 also adds the paired database privilege grant of §3.7.3, and a test
+# asserting all three §3.7.2 structural facts. This contract is one of the three
+# — it is not the whole layer, and an import graph cannot see a raw SQL INSERT.
+[importlinter:contract:release-gate-isolation]
+name = Only release_gate may authorize or deliver (§3.7.2, §7.6)
+type = forbidden
+source_modules =
+forbidden_modules =
