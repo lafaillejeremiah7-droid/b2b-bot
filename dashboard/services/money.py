@@ -141,7 +141,6 @@ class InvoiceManager:
         Authz.check(operator, Action.INVOICE_CREATE)
         key = idempotency_key or uuid4()
 
-        # Phase 1: validate and snapshot under lock. No external call in a txn.
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
             if deal.lead.status != PipelineState.WON:
@@ -161,9 +160,6 @@ class InvoiceManager:
         if result.status != "success":
             return InvoiceOutcome(None, result, key)
 
-        # Phase 3: persist only if the exact locked commercial facts are still
-        # current. This prevents an adapter response for one price from being
-        # paired with a local invoice created after the agreed price changed.
         with transaction.atomic():
             deal = Deal.objects.select_for_update().select_related("lead").get(pk=deal_id)
             existing = Invoice.objects.filter(deal_id=deal.pk).first()
@@ -175,13 +171,18 @@ class InvoiceManager:
                 raise ValidationRejected("Agreed price changed while invoice creation was in progress; retry the action.")
             invoice_number = str(result.payload.get("invoice_number") or f"INV-{deal.pk}-{str(key)[:8]}")
             try:
-                invoice = Invoice.objects.create(
-                    deal=deal,
-                    invoice_number=invoice_number[:200],
-                    amount=amount,
-                )
+                # Keep the uniqueness race in its own savepoint so a conflict
+                # does not poison the outer transaction before the fallback read.
+                with transaction.atomic():
+                    invoice = Invoice.objects.create(
+                        deal=deal,
+                        invoice_number=invoice_number[:200],
+                        amount=amount,
+                    )
             except IntegrityError:
-                invoice = Invoice.objects.get(deal_id=deal.pk)
+                invoice = Invoice.objects.filter(deal_id=deal.pk).first()
+                if invoice is None:
+                    raise ValidationRejected("Invoice identity collided with another record; retry the action.")
                 return InvoiceOutcome(invoice, result, key)
             deal.invoice_id = invoice.id
             deal.save(update_fields=["invoice_id"])
@@ -366,8 +367,6 @@ class ReleaseGate:
             deal.delivery_sent = True
             deal.delivered_date = delivered_at
             deal.save(update_fields=["delivery_sent", "delivered_date"])
-            # The authorization, not the retrying operator, is the human action
-            # that permits release. Keep history actor and audit actor aligned.
             _transition_with_existing_audit(
                 lead=deal.lead,
                 target=PipelineState.RELEASED,
@@ -423,13 +422,23 @@ class ReleaseGate:
                 delivery_key = requested_key
                 authorized_at = timezone.now()
                 try:
-                    authorization = ReleaseAuthorization.objects.create(
-                        deal=deal,
-                        operator=operator,
-                        authorized_at=authorized_at,
-                    )
+                    # Isolate the unique-authority race in a savepoint; otherwise
+                    # catching IntegrityError would leave the outer transaction
+                    # unusable before the fallback query.
+                    with transaction.atomic():
+                        authorization = ReleaseAuthorization.objects.create(
+                            deal=deal,
+                            operator=operator,
+                            authorized_at=authorized_at,
+                        )
                 except IntegrityError:
-                    authorization = ReleaseAuthorization.objects.select_related("operator").get(deal_id=deal.pk)
+                    authorization = (
+                        ReleaseAuthorization.objects.select_related("operator")
+                        .filter(deal_id=deal.pk)
+                        .first()
+                    )
+                    if authorization is None:
+                        raise ValidationRejected("Release authorization conflicted with another record; retry.")
                     audit, recipient_email, authorized_archive, delivery_key = _release_snapshot(authorization)
                     if requested_archive != authorized_archive:
                         raise ValidationRejected(
