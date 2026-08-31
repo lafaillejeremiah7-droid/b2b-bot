@@ -17,7 +17,27 @@ services:
       - key: DJANGO_SECRET_KEY
         generateValue: true
       - key: PIPELINE_ADAPTER_MODE
-        value: "stub"
+        value: "live"
+      # Keep mailbox identity and credentials in Render only. Never commit values.
+      - key: OUTREACH_EMAIL
+        sync: false
+      - key: YAHOO_SMTP_USERNAME
+        sync: false
+      - key: YAHOO_SMTP_APP_PASSWORD
+        sync: false
+      - key: YAHOO_SMTP_HOST
+        value: "smtp.mail.yahoo.com"
+      - key: YAHOO_SMTP_PORT
+        value: "465"
+      - key: YAHOO_SMTP_USE_SSL
+        value: "1"
+      - key: YAHOO_SMTP_TIMEOUT_SECONDS
+        value: "30"
+      # Stripe remains environment-only as well. The app fails closed when absent.
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
       - key: POSTGRES_DB
         fromDatabase:
           name: b2b-bot-db
