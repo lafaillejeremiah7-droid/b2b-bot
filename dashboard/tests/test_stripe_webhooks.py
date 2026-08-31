@@ -51,11 +51,7 @@ def test_stripe_signature_rejects_stale_timestamp():
         )
 
 
-@pytest.mark.django_db
-def test_signed_invoice_paid_records_once_and_advances_state(settings):
-    settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
-    settings.STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300
-    now = int(time.time())
+def _invoice_records():
     lead = Lead.objects.create(
         company_name="Buyer Co",
         contact_name="Buyer",
@@ -72,6 +68,16 @@ def test_signed_invoice_paid_records_once_and_advances_state(settings):
         provider_invoice_id="in_live_123",
         hosted_invoice_url="https://invoice.stripe.test/i/123",
     )
+    return lead, deal, invoice
+
+
+@pytest.mark.django_db
+def test_signed_invoice_paid_records_once_and_advances_state(settings):
+    settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
+    settings.STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300
+    settings.STRIPE_CURRENCY = "usd"
+    now = int(time.time())
+    lead, deal, invoice = _invoice_records()
     event = {
         "id": "evt_invoice_paid_123",
         "type": "invoice.paid",
@@ -80,6 +86,7 @@ def test_signed_invoice_paid_records_once_and_advances_state(settings):
             "object": {
                 "id": "in_live_123",
                 "status": "paid",
+                "currency": "usd",
                 "amount_paid": 70000,
                 "metadata": {"local_invoice_id": str(invoice.pk)},
             }
@@ -105,6 +112,37 @@ def test_signed_invoice_paid_records_once_and_advances_state(settings):
 
 
 @pytest.mark.django_db
+def test_signed_local_invoice_paid_rejects_wrong_currency_before_payment_record(settings):
+    settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
+    settings.STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300
+    settings.STRIPE_CURRENCY = "usd"
+    now = int(time.time())
+    _lead, _deal, invoice = _invoice_records()
+    event = {
+        "id": "evt_invoice_paid_eur",
+        "type": "invoice.paid",
+        "created": now,
+        "data": {
+            "object": {
+                "id": "in_live_123",
+                "status": "paid",
+                "currency": "eur",
+                "amount_paid": 70000,
+                "metadata": {"local_invoice_id": str(invoice.pk)},
+            }
+        },
+    }
+    payload = json.dumps(event, separators=(",", ":")).encode("utf-8")
+    signature = _signature(payload, settings.STRIPE_WEBHOOK_SECRET, now)
+
+    with pytest.raises(StripeWebhookError, match="does not match configured currency"):
+        StripeWebhookIntake.handle(payload, signature)
+
+    assert Payment.objects.count() == 0
+    assert ProcessedEvent.objects.count() == 0
+
+
+@pytest.mark.django_db
 def test_unrelated_stripe_invoice_is_acknowledged_but_ignored(settings):
     settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
     settings.STRIPE_WEBHOOK_TOLERANCE_SECONDS = 300
@@ -117,6 +155,7 @@ def test_unrelated_stripe_invoice_is_acknowledged_but_ignored(settings):
             "object": {
                 "id": "in_some_other_product",
                 "status": "paid",
+                "currency": "usd",
                 "amount_paid": 50000,
                 "metadata": {},
             }
