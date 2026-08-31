@@ -5,6 +5,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
+from urllib.parse import urlparse
 from uuid import UUID
 
 from django.conf import settings
@@ -69,22 +70,32 @@ class PipelineAdapter(ABC):
 
 
 class StubPipelineAdapter(PipelineAdapter):
-    """Deterministic no-network implementation used by the dashboard in stub mode."""
+    """No-network adapter that never claims an external side effect happened."""
+
+    @staticmethod
+    def _dry_run_failure(operation: str) -> AdapterResult:
+        return AdapterResult(
+            "failure",
+            failure_reason=f"{operation} is disabled in stub mode; no external action was performed.",
+            payload={"stub": True},
+        )
 
     def generate_site_preview(self, *, lead_id: int, idempotency_key: UUID) -> AdapterResult:
-        return AdapterResult("success", payload={"lead_id": lead_id, "stub": True})
+        return self._dry_run_failure("Site preview generation")
 
     def send_prospect_email(self, **kwargs) -> AdapterResult:
-        return AdapterResult("success", payload={"stub": True})
+        return self._dry_run_failure("Prospect email delivery")
 
     def send_delivery_email(self, **kwargs) -> AdapterResult:
-        return AdapterResult("success", payload={"stub": True})
+        return self._dry_run_failure("Website delivery email")
 
     def create_invoice(self, **kwargs) -> AdapterResult:
+        # InvoiceManager intentionally creates a local draft in both stub and live
+        # modes. Stripe is touched only by the separate, human-approved send gate.
         return AdapterResult("success", payload={"stub": True, "draft_only": True})
 
     def log_outbound_call(self, **kwargs) -> AdapterResult:
-        return AdapterResult("success", payload={"stub": True})
+        return self._dry_run_failure("Outbound call provider")
 
 
 class LivePipelineAdapter(StubPipelineAdapter):
@@ -139,8 +150,12 @@ class LivePipelineAdapter(StubPipelineAdapter):
 
     def send_delivery_email(self, **kwargs) -> AdapterResult:
         archive_link = str(kwargs.get("archive_link") or "").strip()
-        if not archive_link:
-            return AdapterResult("failure", failure_reason="delivery archive link is missing")
+        parsed = urlparse(archive_link)
+        if parsed.scheme != "https" or not parsed.netloc or len(archive_link) > 2048:
+            return AdapterResult(
+                "failure",
+                failure_reason="delivery archive link must be an HTTPS URL no longer than 2048 characters",
+            )
         sender_name = settings.OUTREACH_SENDER_NAME.strip() or "Website Design Team"
         body = (
             "Hi,\n\n"
