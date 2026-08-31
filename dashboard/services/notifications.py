@@ -69,7 +69,6 @@ class NotificationService:
 
     @staticmethod
     def _enqueue(notification_id: int, channel: str) -> None:
-        # Import lazily so model/service imports never require a live broker.
         from dashboard.tasks import deliver_notification
 
         try:
@@ -91,7 +90,7 @@ class NotificationService:
     ) -> NotificationPreference:
         if event_type not in NotificationEventType.values:
             raise ValueError("unknown notification event type")
-        if slack_enabled and not (operator.slack_webhook_url or "").strip():
+        if slack_enabled and not (operator.slack_webhook_target or "").strip():
             raise ValueError("A Slack webhook target is required before Slack can be enabled.")
         pref, _ = NotificationPreference.objects.update_or_create(
             operator=operator,
