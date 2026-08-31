@@ -12,6 +12,7 @@ from dashboard.services.outreach_templates import (
     OutreachContext,
     professional_signature,
     render_google_maps_outreach,
+    render_invoice_link_email,
 )
 
 STATUS_COMPLETE = "complete"
@@ -221,6 +222,42 @@ class SalesBot:
             )
         return _stage(self.name, STATUS_COMPLETE, "Approved message for delivery adapter submission.")
 
+    def send_invoice_link(
+        self,
+        *,
+        adapter,
+        lead_id: int,
+        to_email: str,
+        first_name: str,
+        company_name: str,
+        amount_usd: int,
+        hosted_invoice_url: str,
+        idempotency_key,
+    ):
+        """Employee #5 sends the operator-approved Stripe invoice link.
+
+        This is a post-win transactional message, not cold prospect outreach, so
+        the cold-outreach clearance handoff is not re-run. The human invoice-send
+        confirmation is the authorization boundary. The adapter still receives a
+        stable idempotency key so retries can collapse safely.
+        """
+        destination = (to_email or "").strip().lower()
+        if not destination or "@" not in destination or len(destination) > 320:
+            raise ValueError("Sales Bot requires a valid invoice recipient email.")
+        subject, body = render_invoice_link_email(
+            first_name=first_name,
+            company_name=company_name,
+            amount_usd=amount_usd,
+            hosted_invoice_url=hosted_invoice_url,
+        )
+        return adapter.send_prospect_email(
+            lead_id=lead_id,
+            to_email=destination,
+            subject=subject,
+            body=body,
+            idempotency_key=idempotency_key,
+        )
+
 
 class Manager:
     name = "Manager"
@@ -242,7 +279,7 @@ class Manager:
 
 
 class SixEmployeePipeline:
-    """Fail-closed outbound team within the seven-employee company."""
+    """Fail-closed outbound team within the eight-employee company."""
 
     def run(self, lead: Lead) -> PipelineResult:
         stages: list[dict[str, Any]] = []
