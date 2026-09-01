@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.db import connection
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.urls import path
@@ -28,7 +29,18 @@ from dashboard.views import company_dashboard
 
 
 def health(_request):
-    return JsonResponse({"status": "ok", "company": "b2b-bot"})
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            row = cursor.fetchone()
+        if row != (1,):
+            raise RuntimeError("database probe returned an unexpected result")
+    except Exception:
+        return JsonResponse(
+            {"status": "unavailable", "company": "b2b-bot", "database": "unavailable"},
+            status=503,
+        )
+    return JsonResponse({"status": "ok", "company": "b2b-bot", "database": "ok"})
 
 
 def home(_request):
