@@ -1,12 +1,21 @@
 services:
+  - type: keyvalue
+    name: b2b-bot-queue
+    plan: free
+    region: ohio
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
+    persistenceMode: off
+
   - type: web
     name: b2b-bot-dashboard
     runtime: python
     plan: free
     region: ohio
-    branch: feat/b2b-runtime-foundation
-    autoDeploy: false
-    buildCommand: pip install -e . && python manage.py collectstatic --noinput && python manage.py migrate --noinput
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -e . && python manage.py collectstatic --noinput
+    preDeployCommand: python manage.py migrate --noinput
     startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
     healthCheckPath: /health/
     envVars:
@@ -18,7 +27,16 @@ services:
         generateValue: true
       - key: PIPELINE_ADAPTER_MODE
         value: "live"
-      # Keep mailbox identity and credentials in Render only. Never commit values.
+      - key: PIPELINE_EVENT_SECRET
+        generateValue: true
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: OUTREACH_SENDER_NAME
+        sync: false
+      - key: OUTREACH_PHONE
+        sync: false
       - key: OUTREACH_EMAIL
         sync: false
       - key: YAHOO_SMTP_USERNAME
@@ -33,11 +51,140 @@ services:
         value: "1"
       - key: YAHOO_SMTP_TIMEOUT_SECONDS
         value: "30"
-      # Stripe remains environment-only as well. The app fails closed when absent.
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: b2b-bot-queue
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: b2b-bot-queue
+          property: connectionString
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: b2b-bot-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: b2b-bot-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: b2b-bot-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: b2b-bot-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: b2b-bot-db
+          property: port
+
+  - type: worker
+    name: b2b-bot-worker
+    runtime: python
+    region: ohio
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -e .
+    startCommand: celery -A config worker --loglevel=INFO --concurrency=2
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "0"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: PIPELINE_ADAPTER_MODE
+        value: "live"
+      - key: PIPELINE_EVENT_SECRET
+        generateValue: true
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: OUTREACH_SENDER_NAME
+        sync: false
+      - key: OUTREACH_PHONE
+        sync: false
+      - key: OUTREACH_EMAIL
+        sync: false
+      - key: YAHOO_SMTP_USERNAME
+        sync: false
+      - key: YAHOO_SMTP_APP_PASSWORD
+        sync: false
+      - key: YAHOO_SMTP_HOST
+        value: "smtp.mail.yahoo.com"
+      - key: YAHOO_SMTP_PORT
+        value: "465"
+      - key: YAHOO_SMTP_USE_SSL
+        value: "1"
+      - key: YAHOO_SMTP_TIMEOUT_SECONDS
+        value: "30"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: b2b-bot-queue
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: b2b-bot-queue
+          property: connectionString
+      - key: POSTGRES_DB
+        fromDatabase:
+          name: b2b-bot-db
+          property: database
+      - key: POSTGRES_USER
+        fromDatabase:
+          name: b2b-bot-db
+          property: user
+      - key: POSTGRES_PASSWORD
+        fromDatabase:
+          name: b2b-bot-db
+          property: password
+      - key: POSTGRES_HOST
+        fromDatabase:
+          name: b2b-bot-db
+          property: host
+      - key: POSTGRES_PORT
+        fromDatabase:
+          name: b2b-bot-db
+          property: port
+
+  - type: worker
+    name: b2b-bot-beat
+    runtime: python
+    region: ohio
+    branch: main
+    autoDeploy: true
+    buildCommand: pip install -e .
+    startCommand: celery -A config beat --loglevel=INFO
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: DJANGO_DEBUG
+        value: "0"
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: b2b-bot-queue
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: b2b-bot-queue
+          property: connectionString
       - key: POSTGRES_DB
         fromDatabase:
           name: b2b-bot-db
