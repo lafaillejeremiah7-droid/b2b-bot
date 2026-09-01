@@ -13,7 +13,7 @@ services:
     plan: free
     region: ohio
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     buildCommand: pip install -e . && python manage.py collectstatic --noinput
     preDeployCommand: python manage.py migrate --noinput
     startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
@@ -91,7 +91,7 @@ services:
     runtime: python
     region: ohio
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     buildCommand: pip install -e .
     startCommand: celery -A config worker --loglevel=INFO --concurrency=2
     maxShutdownDelaySeconds: 60
@@ -166,7 +166,7 @@ services:
     runtime: python
     region: ohio
     branch: main
-    autoDeploy: true
+    autoDeployTrigger: checksPass
     buildCommand: pip install -e .
     startCommand: celery -A config beat --loglevel=INFO
     maxShutdownDelaySeconds: 30
