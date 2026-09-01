@@ -4,7 +4,9 @@ services:
     plan: free
     region: ohio
     ipAllowList: []
-    maxmemoryPolicy: allkeys-lru
+    # This instance is a job queue, not a cache. Never evict queued work to make
+    # room: reject new writes instead so overload is visible and recoverable.
+    maxmemoryPolicy: noeviction
     persistenceMode: off
 
   - type: web
@@ -15,7 +17,7 @@ services:
     branch: main
     autoDeployTrigger: checksPass
     buildCommand: pip install -e . && python manage.py collectstatic --noinput
-    preDeployCommand: python manage.py migrate --noinput
+    preDeployCommand: python manage.py check --deploy --fail-level ERROR && python manage.py migrate --noinput
     startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60
     healthCheckPath: /health/
     envVars:
@@ -93,7 +95,7 @@ services:
     branch: main
     autoDeployTrigger: checksPass
     buildCommand: pip install -e .
-    startCommand: celery -A config worker --loglevel=INFO --concurrency=2
+    startCommand: python manage.py check --deploy --fail-level ERROR && celery -A config worker --loglevel=INFO --concurrency=2
     maxShutdownDelaySeconds: 60
     envVars:
       - key: DJANGO_DEBUG

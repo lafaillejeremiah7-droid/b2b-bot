@@ -3,11 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from django.conf import settings
-
 from dashboard.models import (
-    Lead,
     Invoice,
+    Lead,
     OutreachRequest,
     OutreachRequestStatus,
     OutreachSuppression,
@@ -16,6 +14,7 @@ from dashboard.models import (
     SiteProject,
     SiteReviewState,
 )
+from dashboard.services.runtime_readiness import runtime_requirements
 
 
 @dataclass(frozen=True)
@@ -171,54 +170,12 @@ def recent_lead_dishes(limit: int = 6) -> tuple[RecentLeadDish, ...]:
 
 
 def integration_readiness() -> tuple[IntegrationReadiness, ...]:
-    """Report configuration truth without exposing or persisting credentials."""
-    yahoo_ready = bool(
-        settings.YAHOO_SMTP_HOST
-        and settings.YAHOO_SMTP_PORT
-        and settings.YAHOO_SMTP_USERNAME
-        and settings.YAHOO_SMTP_APP_PASSWORD
-    )
-    broker = str(settings.CELERY_BROKER_URL or "")
-    async_ready = bool(broker and "localhost" not in broker and "127.0.0.1" not in broker)
-    return (
+    """Report deployment truth without exposing or persisting credentials."""
+    return tuple(
         IntegrationReadiness(
-            name="Google Places",
-            configured=bool(settings.GOOGLE_MAPS_API_KEY),
-            purpose="Scout discovery",
-        ),
-        IntegrationReadiness(
-            name="Independent web search",
-            configured=bool(settings.SERPAPI_API_KEY),
-            purpose="Researcher no-website verification",
-        ),
-        IntegrationReadiness(
-            name="Outbound identity",
-            configured=bool(settings.OUTREACH_EMAIL and settings.OUTREACH_PHONE),
-            purpose="Professional customer identity",
-        ),
-        IntegrationReadiness(
-            name="Yahoo Business SMTP",
-            configured=yahoo_ready,
-            purpose="Sales Bot outreach, invoices, and delivery",
-        ),
-        IntegrationReadiness(
-            name="Stripe",
-            configured=bool(settings.STRIPE_SECRET_KEY and settings.STRIPE_WEBHOOK_SECRET),
-            purpose="Closer invoice link + authenticated payment events",
-        ),
-        IntegrationReadiness(
-            name="Pipeline event authentication",
-            configured=bool(settings.PIPELINE_EVENT_SECRET),
-            purpose="Authenticated generic event intake",
-        ),
-        IntegrationReadiness(
-            name="Background queue",
-            configured=async_ready,
-            purpose="Celery worker and scheduled maintenance",
-        ),
-        IntegrationReadiness(
-            name="Live adapter mode",
-            configured=settings.PIPELINE_ADAPTER_MODE == "live",
-            purpose="External side effects enabled only when explicitly live",
-        ),
+            name=item.name,
+            configured=item.configured,
+            purpose=item.purpose,
+        )
+        for item in runtime_requirements()
     )

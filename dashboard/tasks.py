@@ -6,11 +6,11 @@ from urllib import request as urllib_request
 
 from celery import shared_task
 from django.conf import settings
-from django.core.mail import send_mail
 from django.db import transaction
 from django.db.models import Max, Q
 from django.utils import timezone
 
+from dashboard.adapter.yahoo_smtp import get_yahoo_smtp_client
 from dashboard.models import (
     AuditActionType,
     AuditEntry,
@@ -50,12 +50,14 @@ def _send_channel(notification: Notification, channel: str) -> None:
         target = (operator.registered_email or operator.email or "").strip()
         if not target:
             raise RuntimeError("operator has no notification email")
-        send_mail(
+        # Use the same hardened Yahoo boundary as Sales Bot instead of Django's
+        # default localhost SMTP backend. The stable notification identity keeps
+        # retries on one Message-ID even though SMTP has no exactly-once API.
+        get_yahoo_smtp_client().send(
+            to=target,
             subject=f"B2B Deal Room: {notification.get_event_type_display()}",
-            message=text,
-            from_email=settings.NOTIFICATION_EMAIL_FROM or None,
-            recipient_list=[target],
-            fail_silently=False,
+            body=text,
+            idempotency_key=f"notification-{notification.id}-email",
         )
         return
     if channel == NotificationChannel.SLACK:

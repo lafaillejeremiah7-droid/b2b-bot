@@ -23,13 +23,13 @@ def first_name_token(value: str | None, *, default: str = "there") -> str:
 
 
 def professional_signature() -> str:
-    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Jeremiah Lafaille").strip()
+    sender = getattr(settings, "OUTREACH_SENDER_NAME", "Website Design Team").strip()
     phone = getattr(settings, "OUTREACH_PHONE", "").strip()
     email = getattr(settings, "OUTREACH_EMAIL", "").strip()
 
     lines = [
         "Best,",
-        sender,
+        sender or "Website Design Team",
         "Website Design & Digital Presence",
     ]
     if phone:

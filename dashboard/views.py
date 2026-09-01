@@ -14,6 +14,7 @@ from dashboard.services.dashboard_state import (
     recent_lead_dishes,
     suppression_count,
 )
+from dashboard.services.runtime_readiness import company_is_ready
 
 
 @dataclass(frozen=True)
@@ -139,10 +140,7 @@ def company_dashboard(request):
             "configured_integrations": configured_integrations,
             "integration_count": len(integrations),
             "integrations": integrations,
-            "company_live_configured": (
-                configured_integrations == len(integrations)
-                and all(card.status == "ready" for card in cards)
-            ),
+            "company_live_configured": company_is_ready(),
             "snapshot": snapshot,
             "recent_dishes": recent_lead_dishes(),
             "pending_invoice": pending_invoice,

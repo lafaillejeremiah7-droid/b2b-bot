@@ -78,10 +78,9 @@ STRIPE_INVOICE_DAYS_UNTIL_DUE = int(os.getenv("STRIPE_INVOICE_DAYS_UNTIL_DUE", "
 STRIPE_INVOICE_DESCRIPTION = os.getenv("STRIPE_INVOICE_DESCRIPTION", "Website Design & Digital Presence")
 STRIPE_API_TIMEOUT_SECONDS = int(os.getenv("STRIPE_API_TIMEOUT_SECONDS", "20"))
 
-# Sales Bot sends through the business Yahoo mailbox. The mailbox password/app
-# password is deployment-only and is never persisted in the repo or database.
-# smtp.mail.yahoo.com:465 is the normal Yahoo SSL endpoint; business/Turbify
-# accounts can override the host/port without changing application code.
+# Sales Bot and asynchronous operator email notifications use the same hardened
+# Yahoo SMTP boundary. The mailbox credential must be an app password (or other
+# mailbox-specific SMTP credential) supplied only by the deployment environment.
 YAHOO_SMTP_HOST = os.getenv("YAHOO_SMTP_HOST", "smtp.mail.yahoo.com")
 YAHOO_SMTP_PORT = int(os.getenv("YAHOO_SMTP_PORT", "465"))
 YAHOO_SMTP_USERNAME = os.getenv("YAHOO_SMTP_USERNAME", "")
@@ -89,12 +88,12 @@ YAHOO_SMTP_APP_PASSWORD = os.getenv("YAHOO_SMTP_APP_PASSWORD", "")
 YAHOO_SMTP_USE_SSL = os.getenv("YAHOO_SMTP_USE_SSL", "1") == "1"
 YAHOO_SMTP_TIMEOUT_SECONDS = int(os.getenv("YAHOO_SMTP_TIMEOUT_SECONDS", "30"))
 
-# Outbound identity is injected at deploy/runtime so personal contact details are
-# never committed to this public repository.
-OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Jeremiah Lafaille")
-OUTREACH_PHONE = os.getenv("OUTREACH_PHONE", "")
-OUTREACH_EMAIL = os.getenv("OUTREACH_EMAIL", YAHOO_SMTP_USERNAME)
-NOTIFICATION_EMAIL_FROM = os.getenv("NOTIFICATION_EMAIL_FROM", OUTREACH_EMAIL)
+# Customer-facing identity is deployment configuration. The generic development
+# fallback avoids committing a person's identity to this public repository.
+OUTREACH_SENDER_NAME = os.getenv("OUTREACH_SENDER_NAME", "Website Design Team").strip()
+OUTREACH_PHONE = os.getenv("OUTREACH_PHONE", "").strip()
+OUTREACH_EMAIL = os.getenv("OUTREACH_EMAIL", YAHOO_SMTP_USERNAME).strip()
+NOTIFICATION_EMAIL_FROM = os.getenv("NOTIFICATION_EMAIL_FROM", OUTREACH_EMAIL).strip()
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"

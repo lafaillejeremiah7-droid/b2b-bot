@@ -74,14 +74,34 @@ jobs:
         run: python manage.py migrate --noinput
       - name: Run service tests
         run: pytest dashboard/tests -q --junitxml=pytest-report.xml
+      - name: Production readiness check contract
+        env:
+          DJANGO_DEBUG: "0"
+          DJANGO_ALLOWED_HOSTS: ".onrender.com"
+          PIPELINE_ADAPTER_MODE: "live"
+          PIPELINE_EVENT_SECRET: "ci-event-secret"
+          GOOGLE_MAPS_API_KEY: "ci-maps-key"
+          SERPAPI_API_KEY: "ci-search-key"
+          OUTREACH_SENDER_NAME: "CI Website Team"
+          OUTREACH_PHONE: "555-0100"
+          OUTREACH_EMAIL: "sender@example.com"
+          YAHOO_SMTP_USERNAME: "sender@example.com"
+          YAHOO_SMTP_APP_PASSWORD: "ci-app-password"
+          STRIPE_SECRET_KEY: "ci-stripe-secret"
+          STRIPE_WEBHOOK_SECRET: "ci-stripe-webhook-secret"
+          CELERY_BROKER_URL: "redis://queue.example.com:6379/0"
+          CELERY_RESULT_BACKEND: "redis://queue.example.com:6379/0"
+        run: python manage.py check --deploy --fail-level ERROR
       - name: Production blueprint assertions
         run: |
           grep -q 'branch: main' render.yaml
           grep -q 'autoDeployTrigger: checksPass' render.yaml
           grep -q 'type: keyvalue' render.yaml
+          grep -q 'maxmemoryPolicy: noeviction' render.yaml
           grep -q 'name: b2b-bot-worker' render.yaml
           grep -q 'name: b2b-bot-beat' render.yaml
           grep -q 'PIPELINE_ADAPTER_MODE' render.yaml
+          grep -q 'check --deploy --fail-level ERROR' render.yaml
       - name: Upload CI diagnostics
         if: always()
         uses: actions/upload-artifact@v4
