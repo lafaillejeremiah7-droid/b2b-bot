@@ -21,7 +21,7 @@ def test_dashboard_requires_authentication(client):
     OUTREACH_EMAIL="sender@example.com",
     OUTREACH_PHONE="555-0100",
 )
-def test_authenticated_dashboard_renders_eight_employee_formation_and_real_suppression_count(client):
+def test_authenticated_dashboard_renders_eight_employee_kitchen_and_real_suppression_count(client):
     user = get_user_model().objects.create_user(
         username="owner",
         password="test-password",
@@ -36,7 +36,9 @@ def test_authenticated_dashboard_renders_eight_employee_formation_and_real_suppr
     html = response.content.decode("utf-8")
 
     assert response.status_code == 200
-    assert "Eight-player operating squad" in html
+    assert "B2B LEAD KITCHEN" in html
+    assert "COMPANY KITCHEN" in html
+    assert "REJECTION FURNACE" in html
     for employee in (
         "Scout",
         "Researcher",
@@ -48,15 +50,15 @@ def test_authenticated_dashboard_renders_eight_employee_formation_and_real_suppr
         "Boss",
     ):
         assert employee in html
-    assert "1" in html
-    assert "durable do-not-contact records" in html
-    assert "3/4" in html
-    assert "Awaiting persisted pipeline telemetry" in html
-    assert html.count("configured") >= 3
+    assert "do-not-contact" in html
+    assert "3/8" in html
+    assert "No leads exist yet" in html
+    assert "Eight-player operating squad" not in html
+    assert "Starting XI" not in html
 
 
 @pytest.mark.django_db
-def test_dashboard_does_not_fake_unpersisted_pipeline_kpis(client):
+def test_dashboard_does_not_fake_pipeline_kpis_when_database_is_empty(client):
     user = get_user_model().objects.create_user(
         username="operator",
         password="test-password",
@@ -67,10 +69,23 @@ def test_dashboard_does_not_fake_unpersisted_pipeline_kpis(client):
     html = response.content.decode("utf-8")
 
     assert response.status_code == 200
-    assert "persisted pipeline samples" in html
-    assert "Awaiting persisted pipeline telemetry" in html
+    assert "No leads exist yet" in html
+    assert "0" in html
     assert "100% close rate" not in html
-    assert "revenue" not in html.lower()
+    assert "$124.6K" not in html
+    assert "128" not in html
+
+
+@pytest.mark.django_db
+def test_health_checks_database(client):
+    response = client.get(reverse("health"))
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "company": "b2b-bot",
+        "database": "ok",
+    }
 
 
 @pytest.mark.django_db
